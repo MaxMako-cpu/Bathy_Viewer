@@ -115,12 +115,25 @@ the feed and the grid must agree (UTM 15N for the BOEM file).
 
 Dots are drawn at screen-constant size and sit **on the seabed** beneath their
 E/N, because the feed carries no depth. *Vessel at sea surface* lifts the vessel
-to z = 0 and draws a drop line to the bottom instead. **Zoom to targets** frames
-the group — worth knowing, since the vehicles work a few hundred metres apart on
-a grid over 100 km wide and are a couple of pixels at full extent.
+to z = 0 and draws a drop line to the bottom instead.
+
+**Scale is the thing to understand here.** Viewing the whole grid puts the
+camera ~215 km back, where one pixel is about 90 m of seabed — so a vehicle
+making 0.6 m/s moves a *sixth of a pixel per second* and looks frozen, trail
+and all. The first fix of a session therefore frames the vehicles
+automatically (~0.8 m/pixel, where ten seconds of that motion is 18 px).
+**Zoom to targets** re-frames them on demand, and **Follow targets** keeps the
+camera centred as they move without changing your zoom.
+
+Markers, trails and drop lines are drawn over the terrain rather than
+depth-tested against it. A target sits at exactly the depth of the seabed
+under it, so any ridge between it and the camera would otherwise hide it — and
+a tracking mark you cannot see is worse than useless.
 
 The **Live positions** table shows each vehicle's easting, northing, the seabed
-depth under it, and the age of the last fix. Targets dim after 5 s without a
+depth under it, its speed over the ground, and the age of the last fix. The
+speed column is the quickest way to confirm the feed is live when the dots are
+too far away for their motion to register. Targets dim after 5 s without a
 datagram (`feed.STALE_AFTER`).
 
 ### Notes on the format
