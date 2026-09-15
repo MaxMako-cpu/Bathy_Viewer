@@ -136,6 +136,11 @@ datagram (`feed.STALE_AFTER`).
   can be receiving packets while not moving. Staleness is judged on packet
   arrival, not on position change.
 * A position outside the grid shows as `off grid` in the table and is not drawn.
+* The listener does **not** set `SO_REUSEADDR`. If another program on the
+  machine already holds the port, binding fails with a message rather than
+  quietly taking the datagrams off it - on Windows two UDP sockets sharing a
+  port deliver unicast to whichever bound last. To feed two consumers, have
+  the sender repeat to a second port.
 
 ### Changing the feed
 

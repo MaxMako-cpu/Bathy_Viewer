@@ -124,7 +124,11 @@ class PositionFeed(QtCore.QThread):
         self._stop.clear()
         self.packets = self.records = self.bad = 0
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Deliberately NOT SO_REUSEADDR. On Windows that lets a second socket
+        # bind a port another process already holds, and unicast datagrams then
+        # go to whichever bound last - so starting the viewer beside a live
+        # survey consumer could silently steal its feed. Failing to bind is a
+        # message on screen; stealing a production stream is not.
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         except OSError:
@@ -133,7 +137,10 @@ class PositionFeed(QtCore.QThread):
             sock.bind((self.host, self.port))
         except OSError as exc:
             sock.close()
-            self.status.emit(f"Cannot bind UDP {self.host}:{self.port} - {exc}", False)
+            self.status.emit(
+                f"Cannot bind UDP {self.host}:{self.port} - {exc}. "
+                "Another program on this machine is probably already receiving "
+                "this feed.", False)
             return
 
         sock.settimeout(0.4)
@@ -169,7 +176,6 @@ def _sniff(argv):
     """`python -m bathy3d.feed [port]` - print raw datagrams and what they decode to."""
     port = int(argv[1]) if len(argv) > 1 else DEFAULT_PORT
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     except OSError:
@@ -178,6 +184,8 @@ def _sniff(argv):
         sock.bind(("0.0.0.0", port))
     except OSError as exc:
         print(f"cannot bind UDP {port}: {exc}")
+        print("another program on this machine is already receiving this feed -"
+              " stop it first, or have the sender repeat to a second port")
         return 1
     print(f"listening on UDP 0.0.0.0:{port} - Ctrl+C to stop")
     n = 0
