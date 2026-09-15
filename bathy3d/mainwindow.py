@@ -12,7 +12,7 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import raster
-from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER
+from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
 from .measure import compass
 from .ramps import DEPTH_RAMPS
 from .targets import DEFAULT_TARGETS
@@ -657,8 +657,9 @@ class MainWindow(QtWidgets.QMainWindow):
         quiet = time.monotonic() - f.last_packet_at
         if f.records == 0:
             self.feed_status.setText(
-                f"{f.packets} datagrams from {f.last_addr}, but none decoded. "
-                f"Last: {f.last_raw[:120]!r}")
+                f"{f.packets} datagrams from {f.last_addr}, none decoded.\n"
+                f"{explain(f.last_raw)}\n"
+                f"Last: {f.last_raw[:110]!r}")
             self.feed_status.setStyleSheet("color: #e8663d;")
         else:
             self.feed_status.setText(

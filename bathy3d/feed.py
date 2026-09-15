@@ -92,6 +92,38 @@ def parse_records(buf: str) -> tuple[list[Fix], str]:
     return fixes, tail[-_MAX_CARRY:]
 
 
+def explain(buf: str) -> str:
+    """Say why a chunk did not decode, in terms someone can act on.
+
+    "It didn't parse" is useless on a vessel. The three things that actually
+    differ between senders are the timestamp, the field count and the
+    separator, so name whichever one is wrong.
+    """
+    if not buf.strip():
+        return "empty datagram"
+    m = re.search(_DATE, buf)
+    if not m:
+        head = buf[:40]
+        return (f"no ISO-8601 timestamp found - record starts {head!r}. "
+                "Expected something like 2026-09-15T21:39:04.4609743Z")
+    after = buf[m.end():]
+    nums = re.findall(_NUM, after)
+    want = 2 * len(ORDER)
+    seps = {c for c in after[:200] if not (c.isdigit() or c in "+-.eE")}
+    seps.discard(" ")
+    sep_note = ("separators seen: "
+                + ", ".join(repr(c) for c in sorted(seps)[:6])) if seps else ""
+    if len(nums) < want:
+        return (f"timestamp ok, but only {len(nums)} numeric fields follow it - "
+                f"need {want} ({len(ORDER)} x E/N for {', '.join(ORDER)}). "
+                f"{sep_note}")
+    if "," not in after[:200]:
+        return (f"timestamp ok and {len(nums)} numbers present, but they are not "
+                f"comma-separated. {sep_note}")
+    return (f"timestamp ok, {len(nums)} numeric fields present, but the record "
+            f"still did not match. {sep_note}")
+
+
 class PositionFeed(QtCore.QThread):
     """Listens on a UDP port and emits every fix it decodes.
 
@@ -205,7 +237,10 @@ def _sniff(argv):
                                        for k, v in f.pos.items())
                     print(f"    ok : {f.t:%H:%M:%S}Z  {pretty}")
             else:
-                print(f"    !! no complete record decoded (carry {len(carry)} chars)")
+                print(f"    !! {explain(raw)}")
+                print(f"    hex: {data[:72].hex(' ')}")
+                if carry:
+                    print(f"    (held {len(carry)} chars for the next datagram)")
     except KeyboardInterrupt:
         print("stopped")
     finally:
