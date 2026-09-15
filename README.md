@@ -97,7 +97,7 @@ bathy3d/
 **Position feed** panel: set the port (default **6451**) and press *Start
 listening*. Depth is read from the terrain, so a grid must be open first.
 
-Wire format, one record per datagram at about 1 Hz:
+Wire format, about 1 Hz:
 
 ```
 2026-09-15T21:39:04.4609743Z,707364.210,3009048.400,707036.708,3009161.042,707634.048,3009049.775
@@ -130,6 +130,17 @@ datagram (`feed.STALE_AFTER`).
   That last case needs care: `...3009049.775` followed immediately by
   `2026-09-15T...` reads as one 15-digit number unless the parser refuses to let
   a coordinate swallow the next record's year.
+* **There are no line terminators.** Records run straight together, so the
+  next record's timestamp is the only thing that proves the previous one ended.
+  A datagram that begins mid-record is normal, not a fault.
+* Because of that, the trailing record in each datagram is held until something
+  confirms it - the next datagram, a terminator, or a 1.5 s silence from the
+  sender. That costs up to ~1 s of latency and is deliberate: a datagram
+  boundary inside a coordinate turns `3009049.775` into `300904`, which puts a
+  vehicle 2700 km away. A late position beats a wrong one.
+* A sender that omits the timestamp works too: a datagram holding a whole
+  number of bare `E,N,E,N,E,N` records is accepted, and arrival time is used.
+  Anything ragged is held rather than guessed.
 * Timestamps are .NET round-trip format with 7 fractional digits; Python's
   `datetime` takes 6, so the last digit is dropped.
 * The sender repeats the previous position when it has no new fix, so a target

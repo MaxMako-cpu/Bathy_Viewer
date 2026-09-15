@@ -52,12 +52,12 @@ def part1_parsing():
         ("leading whitespace", "  " + "\n".join(SAMPLE)),
         ("spaces round commas", "\n".join(s.replace(",", " , ") for s in SAMPLE)),
     ):
-        fixes, tail = parse_records(buf)
+        fixes, tail = parse_records(buf, stream=False)
         vals = [[v for nm in ORDER for v in f.pos[nm]] for f in fixes]
         check(f"framing: {tag}", len(fixes) == 5 and vals == EXPECT,
               f"{len(fixes)} fixes, tail={tail!r}")
 
-    fixes, _ = parse_records(SAMPLE[0])
+    fixes, _ = parse_records(SAMPLE[0], stream=False)
     f = fixes[0]
     check("field mapping", f.pos["Vessel"] == (707364.210, 3009048.400)
           and f.pos["UHD333"] == (707036.708, 3009161.042)
@@ -70,15 +70,42 @@ def part1_parsing():
     whole = "".join(SAMPLE)
     cut = len(SAMPLE[0]) + 40
     a, tail_a = parse_records(whole[:cut])
-    b, _ = parse_records(tail_a + whole[cut:])
+    b, _ = parse_records(tail_a + whole[cut:], stream=False)
     check("record split across datagrams", len(a) + len(b) == 5,
           f"{len(a)} + {len(b)}")
 
+    # Replay the real capture the way a socket actually delivers it: the feed
+    # has no line terminators, so datagram boundaries fall mid-record.
+    whole = "".join(SAMPLE)
+    for size in (7, 13, 31, 64, 97, 128, 256, 485, 1500):
+        carry, got = "", []
+        for k in range(0, len(whole), size):
+            fixes, carry = parse_records(carry + whole[k:k + size])
+            got.extend(fixes)
+        tail_fixes, carry = parse_records(carry, stream=False)   # idle flush
+        got.extend(tail_fixes)
+        vals = [[v for nm in ORDER for v in f.pos[nm]] for f in got]
+        check(f"stream resyncs at {size}-byte datagrams",
+              vals == EXPECT, f"{len(got)}/5 records, carry {len(carry)}")
+
     for tag, junk in (("empty", ""), ("garbage", "hello world"),
                       ("truncated record", SAMPLE[0][:60]),
-                      ("too few fields", "2026-09-15T21:39:04.4609743Z,1.0,2.0")):
-        fixes, _ = parse_records(junk)
+                      ("too few fields", "2026-09-15T21:39:04.4609743Z,1.0,2.0"),
+                      ("half a timestamp", "3009049.775" + "2026-09-1"),
+                      ("odd coordinate count", "707364.210,3009048.400,707036.708")):
+        fixes, _ = parse_records(junk, stream=False)
         check(f"rejects {tag}", fixes == [])
+
+    # Timestamp-free senders: bare coordinate records, with and without lines.
+    bare = ",".join(f"{v:.3f}" for v in EXPECT[-1])
+    for tag, buf in (("bare record", bare),
+                     ("bare, newline", bare + "\n"),
+                     ("two bare records", bare + "\n" + bare)):
+        fixes, _ = parse_records(buf, stream=False)
+        ok = fixes and all(not f.timed for f in fixes) and \
+            [round(v, 3) for nm in ORDER for v in fixes[0].pos[nm]] == \
+            [round(v, 3) for v in EXPECT[-1]]
+        check(f"timestamp-free: {tag}", bool(ok), f"{len(fixes)} fixes")
 
 
 def part2_live(grid):
@@ -177,9 +204,41 @@ def part2_live(grid):
             # two records in one datagram
             before = win.feed.records
             sock.sendto(("".join(SAMPLE[:2])).encode(), ("127.0.0.1", PORT))
-            pump(320)
-            check("two records in one datagram", win.feed.records == before + 2,
+            # The trailing record is held until something confirms it; with the
+            # sender silent that is the idle flush at 1.5 s.
+            for _ in range(60):
+                pump(80)
+                if win.feed.records >= before + 2:
+                    break
+            check("two records in one datagram, second after idle flush",
+                  win.feed.records == before + 2, f"{before} -> {win.feed.records}")
+
+            # The real wire: one continuous run of records, no terminators,
+            # sliced at boundaries that fall inside coordinates.
+            win.view.targets.clear_trail()
+            before = win.feed.records
+            whole = "".join(SAMPLE)
+            for k in range(0, len(whole), 37):
+                sock.sendto(whole[k:k + 37].encode(), ("127.0.0.1", PORT))
+                pump(45)
+            for _ in range(60):
+                pump(80)
+                t = win.view.targets.targets["UHD334"]
+                if win.feed.records >= before + 5 and abs(t.x - EXPECT[-1][4]) < 1e-6:
+                    break
+            check("glued stream in 37-byte slices decodes whole",
+                  win.feed.records == before + 5,
                   f"{before} -> {win.feed.records}")
+            t = win.view.targets.targets["UHD334"]
+            check("no truncated coordinate reached the scene",
+                  abs(t.x - EXPECT[-1][4]) < 1e-6 and abs(t.y - EXPECT[-1][5]) < 1e-6,
+                  f"UHD334 at {t.x:.3f}E {t.y:.3f}N")
+            for nm, i in (("Vessel", 0), ("UHD333", 2), ("UHD334", 4)):
+                tt = win.view.targets.targets[nm]
+                sane = all(abs(a - b) < 2000 for a, b in
+                           ((tt.x, EXPECT[-1][i]), (tt.y, EXPECT[-1][i + 1])))
+                check(f"{nm} never jumped off the survey area", sane,
+                      f"{tt.x:.1f}E {tt.y:.1f}N")
 
             check("no stale drop line after returning to the seabed",
                   "stem" not in win.view.targets._actors.get("Vessel", {}))

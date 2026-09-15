@@ -53,10 +53,15 @@ class FeedError(RuntimeError):
 
 @dataclass
 class Fix:
-    """One timestamped set of vehicle positions."""
+    """One set of vehicle positions.
+
+    ``timed`` is False when the sender carried no timestamp we could read and
+    ``t`` is therefore the arrival time, not the time of the fix.
+    """
 
     t: datetime
     pos: dict = field(default_factory=dict)  # name -> (easting, northing)
+    timed: bool = True
 
     def __len__(self) -> int:
         return len(self.pos)
@@ -71,14 +76,39 @@ def parse_timestamp(s: str) -> datetime:
     return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
 
 
-def parse_records(buf: str) -> tuple[list[Fix], str]:
+def _all_numeric(buf: str):
+    """Every whitespace/comma-separated token as a float, or None if any isn't.
+
+    Strict on purpose. A half-received timestamp like ``2026-09-1`` must not be
+    mistaken for coordinates, so one unparseable token rejects the whole buffer.
+    """
+    toks = [t for t in re.split(r"[,;\t\r\n ]+", buf.strip()) if t]
+    out = []
+    for t in toks:
+        try:
+            out.append(float(t))
+        except ValueError:
+            return None
+    return out
+
+
+def parse_records(buf: str, stream: bool = True) -> tuple[list[Fix], str]:
     """Pull every complete record out of ``buf``.
 
-    Returns the fixes and whatever trailing text was not a complete record, so a
-    caller reading a stream can prepend it to the next chunk.
+    Returns the fixes and the trailing text that was not a complete record, so a
+    caller reading a stream prepends it to the next chunk.
+
+    ``stream=True`` means more bytes may follow, and it is what makes this safe.
+    The feed has no line terminators, so the only thing that proves a record
+    ended is the *next* record's timestamp. A record sitting at the end of the
+    buffer may be a whole record - or one the datagram cut in half, in which case
+    its last coordinate is truncated and the vehicle lands kilometres away. So
+    the trailing record is held back until something confirms it: the next
+    datagram, an explicit terminator, or ``stream=False`` at end of feed. The
+    cost is one record of latency; the alternative is plotting a wrong position.
     """
     fixes: list[Fix] = []
-    end = 0
+    spans: list[tuple[int, int]] = []
     for m in _REC.finditer(buf):
         try:
             t = parse_timestamp(m.group(1))
@@ -87,9 +117,31 @@ def parse_records(buf: str) -> tuple[list[Fix], str]:
         nums = [float(v) for v in m.group(2).split(",") if v.strip()]
         fixes.append(Fix(t, {nm: (nums[2 * i], nums[2 * i + 1])
                              for i, nm in enumerate(ORDER)}))
-        end = m.end()
-    tail = buf[end:].lstrip("\r\n \t")
-    return fixes, tail[-_MAX_CARRY:]
+        spans.append((m.start(), m.end()))
+
+    terminated = buf.endswith(("\n", "\r"))
+    if fixes:
+        if stream and not terminated and spans[-1][1] == len(buf):
+            fixes.pop()  # unconfirmed - may be cut short
+            return fixes, buf[spans[-1][0]:][-_MAX_CARRY:]
+        return fixes, buf[spans[-1][1]:].lstrip("\r\n \t")[-_MAX_CARRY:]
+
+    # No timestamped record. Some senders omit the timestamp entirely; accept a
+    # buffer that is a whole number of coordinate records and nothing else.
+    # Anything ragged is held rather than guessed: pairing coordinates off a
+    # mid-record slice would put the vehicles somewhere they are not.
+    if stream and not terminated:
+        return [], buf[-_MAX_CARRY:]
+    want = 2 * len(ORDER)
+    nums = _all_numeric(buf)
+    if nums and len(nums) % want == 0:
+        now = datetime.now(timezone.utc)
+        for k in range(0, len(nums), want):
+            c = nums[k:k + want]
+            fixes.append(Fix(now, {nm: (c[2 * i], c[2 * i + 1])
+                                   for i, nm in enumerate(ORDER)}, timed=False))
+        return fixes, ""
+    return [], buf.lstrip("\r\n \t")[-_MAX_CARRY:]
 
 
 def explain(buf: str) -> str:
@@ -145,6 +197,8 @@ class PositionFeed(QtCore.QThread):
         # Diagnostics, read by the GUI once a second. Plain ints and strings,
         # so no lock is needed to look at them from the other thread.
         self.last_raw = ""
+        self.last_pending = ""
+        self.carry_len = 0
         self.last_addr = ""
         self.last_packet_at = 0.0
         self.started_at = 0.0
@@ -155,6 +209,7 @@ class PositionFeed(QtCore.QThread):
     def run(self) -> None:
         self._stop.clear()
         self.packets = self.records = self.bad = 0
+        self.carry_len = 0
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Deliberately NOT SO_REUSEADDR. On Windows that lets a second socket
         # bind a port another process already holds, and unicast datagrams then
@@ -184,6 +239,15 @@ class PositionFeed(QtCore.QThread):
                 try:
                     data, _addr = sock.recvfrom(65535)
                 except socket.timeout:
+                    # Sender has gone quiet: nothing is coming to confirm the
+                    # held record, so take it at its word rather than sit on
+                    # the last known position for ever.
+                    if carry and time.monotonic() - self.last_packet_at > 1.5:
+                        flushed, carry = parse_records(carry, stream=False)
+                        self.carry_len = len(carry)
+                        for f in flushed:
+                            self.records += 1
+                            self.fix.emit(f)
                     continue
                 except OSError as exc:
                     self.status.emit(f"Socket error - {exc}", False)
@@ -193,7 +257,13 @@ class PositionFeed(QtCore.QThread):
                 self.last_addr = f"{_addr[0]}:{_addr[1]}"
                 raw = data.decode("ascii", errors="replace")
                 self.last_raw = raw[:220]
-                fixes, carry = parse_records(carry + raw)
+                pending = carry + raw
+                # Diagnose the pending buffer, not this datagram alone: with no
+                # line terminators a datagram routinely starts mid-record, and
+                # judging it on its own reports a fault that isn't there.
+                self.last_pending = pending[:220]
+                fixes, carry = parse_records(pending)
+                self.carry_len = len(carry)
                 if not fixes and not carry:
                     self.bad += 1
                 for f in fixes:

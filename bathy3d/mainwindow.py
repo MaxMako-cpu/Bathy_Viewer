@@ -656,10 +656,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         quiet = time.monotonic() - f.last_packet_at
         if f.records == 0:
-            self.feed_status.setText(
-                f"{f.packets} datagrams from {f.last_addr}, none decoded.\n"
-                f"{explain(f.last_raw)}\n"
-                f"Last: {f.last_raw[:110]!r}")
+            if f.carry_len:
+                # Held bytes mean the stream is being read but no record has
+                # completed yet - a different fault from unreadable data.
+                self.feed_status.setText(
+                    f"{f.packets} datagrams from {f.last_addr}, holding "
+                    f"{f.carry_len} bytes, no complete record yet.\n"
+                    f"{explain(f.last_pending)}")
+            else:
+                self.feed_status.setText(
+                    f"{f.packets} datagrams from {f.last_addr}, none decoded.\n"
+                    f"{explain(f.last_pending)}\n"
+                    f"Last: {f.last_raw[:110]!r}")
             self.feed_status.setStyleSheet("color: #e8663d;")
         else:
             self.feed_status.setText(
