@@ -81,39 +81,74 @@ gdal_translate -of COG -co COMPRESS=DEFLATE -co PREDICTOR=3 -co BLOCKSIZE=512 ^
 ```
 run.py            launcher
 smoke_test.py     headless checks: load, probe vs rasterio, measure, render
+feed_test.py      UDP checks: wire parsing + live datagrams into the window
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
   measure.py      stations, legs, totals, CSV  (no VTK)
   targets.py      vessel / ROV markers, trails, drop lines
+  feed.py         UDP listener + record parser
   ramps.py        colour ramps
   mainwindow.py   PySide6 window, panels, menus, loader thread
 ```
 
-## Step 2 — live positions over UDP
+## Live positions over UDP
 
-`targets.py` is the only thing the position feed needs to touch:
+**Position feed** panel: set the port (default **6451**) and press *Start
+listening*. Depth is read from the terrain, so a grid must be open first.
 
-```python
-view.targets.update("Vessel", easting, northing, 0.0, heading=hdg)
-view.targets.update("ROV 1",  easting, northing, -1487.2)
-view.targets.update("ROV 2",  easting, northing, None)   # None = sit on the seabed
+Wire format, one record per datagram at about 1 Hz:
+
+```
+2026-09-15T21:39:04.4609743Z,707364.210,3009048.400,707036.708,3009161.042,707634.048,3009049.775
+|___ ISO-8601 UTC, .NET "O" ___| |__ Vessel E/N __| |__ UHD333 E/N __| |__ UHD334 E/N __|
 ```
 
-Coordinates are in the **loaded grid's CRS**. If the feed sends WGS 84
-lat/lon, transform first with `pyproj.Transformer.from_crs(4326, surface.crs)`.
-Markers, labels, drop lines to the seabed, and trails are handled for you;
-`mark_stale(name)` dims a target when its fix goes quiet.
+Eastings and northings are read in **the loaded grid's CRS** — no transform, so
+the feed and the grid must agree (UTM 15N for the BOEM file).
 
-A UDP listener should run on its own `QThread` and hand positions to the GUI
-thread through a Qt signal — never call `update()` from the socket thread.
+| Target | Dot |
+| --- | --- |
+| Vessel | magenta |
+| UHD333 | red |
+| UHD334 | green |
 
-**View › Demo target feed (test)** drives three targets in circles so the layer
-can be exercised before any real feed exists.
+Dots are drawn at screen-constant size and sit **on the seabed** beneath their
+E/N, because the feed carries no depth. *Vessel at sea surface* lifts the vessel
+to z = 0 and draws a drop line to the bottom instead. **Zoom to targets** frames
+the group — worth knowing, since the vehicles work a few hundred metres apart on
+a grid over 100 km wide and are a couple of pixels at full extent.
 
-Still to decide for step 2: the wire format (NMEA `$GPGGA` / `$PSIMSSB`, a
-vendor binary, or plain JSON), one port per vehicle or one shared port, and
-whether ROV depth comes from the feed or from the terrain.
+The **Live positions** table shows each vehicle's easting, northing, the seabed
+depth under it, and the age of the last fix. Targets dim after 5 s without a
+datagram (`feed.STALE_AFTER`).
+
+### Notes on the format
+
+* Framing does not matter. Records are decoded whether they arrive one per
+  datagram, LF- or CRLF-separated, or run together with no separator at all.
+  That last case needs care: `...3009049.775` followed immediately by
+  `2026-09-15T...` reads as one 15-digit number unless the parser refuses to let
+  a coordinate swallow the next record's year.
+* Timestamps are .NET round-trip format with 7 fractional digits; Python's
+  `datetime` takes 6, so the last digit is dropped.
+* The sender repeats the previous position when it has no new fix, so a target
+  can be receiving packets while not moving. Staleness is judged on packet
+  arrival, not on position change.
+* A position outside the grid shows as `off grid` in the table and is not drawn.
+
+### Changing the feed
+
+Field order lives in one place — `ORDER` in `bathy3d/feed.py`:
+
+```python
+ORDER = ("Vessel", "UHD333", "UHD334")
+```
+
+Add or reorder vehicles there and give each a colour in `DEFAULT_TARGETS`
+(`bathy3d/targets.py`). Nothing else needs to change. If a future feed carries
+depth, pass it as `z` to `TargetLayer.update()` instead of reading the terrain;
+if it carries heading, `_glyph()` already has a directional vessel marker.
 
 ## Testing
 
@@ -126,8 +161,21 @@ distance against known pixel counts, exercises the measuring maths and the
 target layer, and renders off-screen to a PNG under
 `%TEMP%\bathy3d_smoke\`.
 
+
+```
+C:\Users\<you>\.venvs\bathy3d\Scripts\python.exe feed_test.py
+```
+
+Parses the wire format across six framing variants and four malformed inputs,
+then brings the real window up, starts the real listener, fires real datagrams
+at it over loopback on port 6471, and checks the dots land on the reported
+coordinates at the right seabed depth in the right colours.
+
 ## Known limits
 
 - Rotated / sheared rasters are rejected — reproject north-up first.
 - Band 1 only on multi-band files.
 - No contour overlay yet, and no depth-profile plot along the measured line.
+- The feed carries no depth or heading, so dot height is terrain-derived and
+  the vessel marker has no orientation.
+- No auto-follow: the camera does not track the vehicles as they move.

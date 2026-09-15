@@ -226,6 +226,32 @@ class TerrainView(QtWidgets.QWidget):
     def reset_view(self) -> None:
         self.set_view(210.0, 28.0)
 
+    def zoom_to_targets(self) -> bool:
+        """Frame the tracked vehicles, keeping the current view direction.
+
+        Needed in practice: the vehicles sit a few hundred metres apart on a
+        grid over 100 km wide, so at full extent they are a couple of pixels.
+        """
+        if self.surface is None:
+            return False
+        pts = [(*self.surface.local_from_crs(t.x, t.y), t.z * self.ve)
+               for t in self.targets.targets.values() if t.fix]
+        if not pts:
+            return False
+        xs, ys, zs = zip(*pts)
+        centre = (sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
+        spread = max(max(xs) - min(xs), max(ys) - min(ys), 300.0)
+        cam = self.plotter.camera
+        eye = np.asarray(cam.position, float) - np.asarray(cam.focal_point, float)
+        norm = float(np.linalg.norm(eye))
+        direction = eye / norm if norm > 1e-9 else np.array([0.0, -1.0, 0.6])
+        direction = direction / float(np.linalg.norm(direction))
+        pos = np.asarray(centre, float) + direction * spread * 3.2
+        self.plotter.camera_position = [tuple(pos), centre, (0, 0, 1)]
+        self.plotter.renderer.ResetCameraClippingRange()
+        self.plotter.render()
+        return True
+
     def plan_view(self) -> None:
         self.set_view(180.0, 89.9, zoom=1.15)
 

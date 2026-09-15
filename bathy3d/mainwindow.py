@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 import traceback
 
 import numpy as np
@@ -11,8 +12,10 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import raster
+from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER
 from .measure import compass
 from .ramps import DEPTH_RAMPS
+from .targets import DEFAULT_TARGETS
 from .viewer import TerrainView
 
 OPEN_FILTER = (
@@ -110,10 +113,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._loader = None
         self._demo = None
+        self.feed = None
+        self._last_fix = None
         self._build_controls()
         self._build_readout()
         self._build_menu()
         self.statusBar().showMessage("No grid loaded - File › Open, or drop a GeoTIFF here")
+
+        self._stale_timer = QtCore.QTimer(self)
+        self._stale_timer.timeout.connect(self._check_stale)
+        self._stale_timer.start(1000)
 
         if path:
             QtCore.QTimer.singleShot(60, lambda: self.open_path(path))
@@ -181,20 +190,54 @@ class MainWindow(QtWidgets.QMainWindow):
         ml.addWidget(hint)
         v.addWidget(meas)
 
-        tg = QtWidgets.QGroupBox("Targets")
+        tg = QtWidgets.QGroupBox("Position feed")
         tl = QtWidgets.QVBoxLayout(tg)
+        prow = QtWidgets.QWidget()
+        ph = QtWidgets.QHBoxLayout(prow)
+        ph.setContentsMargins(0, 0, 0, 0)
+        ph.addWidget(self._key("UDP port"))
+        self.port_s = QtWidgets.QSpinBox()
+        self.port_s.setRange(1, 65535)
+        self.port_s.setValue(DEFAULT_PORT)
+        self.port_s.setGroupSeparatorShown(False)
+        ph.addWidget(self.port_s, 1)
+        tl.addWidget(prow)
+
+        self.listen_b = QtWidgets.QPushButton("Start listening")
+        self.listen_b.setCheckable(True)
+        self.listen_b.toggled.connect(self.toggle_feed)
+        tl.addWidget(self.listen_b)
+
+        self.feed_status = QtWidgets.QLabel("Stopped")
+        self.feed_status.setObjectName("hint")
+        self.feed_status.setWordWrap(True)
+        tl.addWidget(self.feed_status)
+        self.feed_stats = QtWidgets.QLabel("")
+        self.feed_stats.setObjectName("mono")
+        tl.addWidget(self.feed_stats)
+
         self.tgt_b = QtWidgets.QPushButton("Show targets")
         self.tgt_b.setCheckable(True)
         self.tgt_b.setChecked(True)
-        self.tgt_b.toggled.connect(lambda on: self.view.targets.set_visible(on))
-        trails = QtWidgets.QPushButton("Clear trails")
-        trails.clicked.connect(lambda: self.view.targets.clear_trail())
+        self.tgt_b.toggled.connect(lambda on: (self.view.targets.set_visible(on),
+                                               self.view.plotter.render()))
         tl.addWidget(self.tgt_b)
+        self.surf_b = QtWidgets.QPushButton("Vessel at sea surface")
+        self.surf_b.setCheckable(True)
+        self.surf_b.setChecked(False)
+        # Without this the trail keeps the points from the other height and
+        # draws a kilometre-high spike between the surface and the seabed.
+        self.surf_b.toggled.connect(
+            lambda _on: (self.view.targets.clear_trail("Vessel"),
+                         self.view.plotter.render()))
+        tl.addWidget(self.surf_b)
+        self.zoom_b = QtWidgets.QPushButton("Zoom to targets")
+        self.zoom_b.clicked.connect(self.zoom_to_targets)
+        tl.addWidget(self.zoom_b)
+        trails = QtWidgets.QPushButton("Clear trails")
+        trails.clicked.connect(lambda: (self.view.targets.clear_trail(),
+                                        self.view.plotter.render()))
         tl.addWidget(trails)
-        note = QtWidgets.QLabel("Waiting on a position feed.\nStep 2: UDP vessel + 2 ROVs.")
-        note.setObjectName("hint")
-        note.setWordWrap(True)
-        tl.addWidget(note)
         v.addWidget(tg)
 
         v.addStretch(1)
@@ -300,6 +343,30 @@ class MainWindow(QtWidgets.QMainWindow):
             bh.addWidget(b)
         mv.addWidget(btns)
         v.addWidget(mg)
+
+        lg = QtWidgets.QGroupBox("Live positions")
+        lv = QtWidgets.QVBoxLayout(lg)
+        self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 5)
+        self.tgt_table.setHorizontalHeaderLabels(["Target", "Easting", "Northing",
+                                                  "Seabed m", "Age"])
+        self.tgt_table.verticalHeader().setVisible(False)
+        self.tgt_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tgt_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeToContents)
+        self.tgt_table.setFixedHeight(28 + 24 * len(ORDER))
+        for r, nm in enumerate(ORDER):
+            item = QtWidgets.QTableWidgetItem(nm)
+            item.setForeground(QtGui.QColor(DEFAULT_TARGETS[nm]["color"]))
+            self.tgt_table.setItem(r, 0, item)
+            for c in range(1, 5):
+                cell = QtWidgets.QTableWidgetItem("--")
+                cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self.tgt_table.setItem(r, c, cell)
+        lv.addWidget(self.tgt_table)
+        self.fix_time = QtWidgets.QLabel("No fix received")
+        self.fix_time.setObjectName("hint")
+        lv.addWidget(self.fix_time)
+        v.addWidget(lg)
         v.addStretch(1)
 
         dock.setWidget(w)
@@ -327,6 +394,7 @@ class MainWindow(QtWidgets.QMainWindow):
         vm = self.menuBar().addMenu("&View")
         vm.addAction("&Reset camera").triggered.connect(self.view.reset_view)
         vm.addAction("&Plan view").triggered.connect(self.view.plan_view)
+        vm.addAction("Zoom to &targets").triggered.connect(self.zoom_to_targets)
         vm.addSeparator()
         vm.addAction("Controls panel").triggered.connect(
             lambda: self.dock_controls.setVisible(not self.dock_controls.isVisible()))
@@ -483,6 +551,88 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view.screenshot(path)
             self.statusBar().showMessage(f"Wrote {path}")
 
+    # --------------------------------------------------------- position feed
+
+    def toggle_feed(self, on):
+        if not on:
+            if self.feed is not None:
+                self.feed.stop()
+                self.feed.wait(2000)
+                self.feed = None
+            self.listen_b.setText("Start listening")
+            self.feed_status.setText("Stopped")
+            return
+        if self.view.surface is None:
+            QtWidgets.QMessageBox.information(
+                self, "Load a grid first",
+                "Open a bathymetry grid before starting the feed - target depth "
+                "is read from the terrain.")
+            self.listen_b.setChecked(False)
+            return
+        self.feed = PositionFeed(self.port_s.value())
+        self.feed.status.connect(self._feed_status)
+        self.feed.fix.connect(self._on_fix)
+        self.feed.start()
+        self.listen_b.setText("Stop listening")
+        self.port_s.setEnabled(False)
+
+    def zoom_to_targets(self):
+        if not self.view.zoom_to_targets():
+            self.statusBar().showMessage("No target positions yet", 4000)
+
+    def _feed_status(self, msg, ok):
+        self.feed_status.setText(msg)
+        self.feed_status.setStyleSheet("color: #7f98a1;" if ok else "color: #e8663d;")
+        if not ok and self.listen_b.isChecked() and msg.startswith("Cannot bind"):
+            self.listen_b.setChecked(False)
+        if not self.listen_b.isChecked():
+            self.port_s.setEnabled(True)
+
+    def _on_fix(self, fx):
+        """A decoded fix, on the GUI thread. Depth comes from the terrain."""
+        s = self.view.surface
+        if s is None:
+            return
+        self._last_fix = time.monotonic()
+        for r, nm in enumerate(ORDER):
+            en = fx.pos.get(nm)
+            if en is None:
+                continue
+            e, n = en
+            p = s.probe(e, n)
+            surface_vessel = nm == "Vessel" and self.surf_b.isChecked()
+            if p is None and not surface_vessel:
+                self._set_row(r, e, n, None, "off grid")
+                continue
+            z = 0.0 if surface_vessel else p.z
+            self.view.targets.update(nm, e, n, z)
+            self._set_row(r, e, n, None if p is None else -p.z, "0 s")
+        self.view.plotter.render()
+        self.fix_time.setText(
+            f"Fix {fx.t:%H:%M:%S}Z  •  {self.feed.records if self.feed else 0} records"
+            f" / {self.feed.packets if self.feed else 0} packets")
+        if self.feed:
+            self.feed_stats.setText(
+                f"{self.feed.packets} pkt  {self.feed.records} rec  {self.feed.bad} bad")
+
+    def _set_row(self, r, e, n, depth, age):
+        self.tgt_table.item(r, 1).setText(f"{e:,.2f}")
+        self.tgt_table.item(r, 2).setText(f"{n:,.2f}")
+        self.tgt_table.item(r, 3).setText("--" if depth is None else f"{depth:,.1f}")
+        self.tgt_table.item(r, 4).setText(age)
+
+    def _check_stale(self):
+        if self.feed is None or self._last_fix is None:
+            return
+        age = time.monotonic() - self._last_fix
+        for r in range(len(ORDER)):
+            self.tgt_table.item(r, 4).setText(f"{age:.0f} s")
+        if age > STALE_AFTER:
+            for nm in ORDER:
+                self.view.targets.mark_stale(nm)
+            self.view.targets.refresh()
+            self.view.plotter.render()
+
     # --------------------------------------------- demo feed for the targets
 
     def toggle_demo_targets(self, on):
@@ -503,7 +653,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def tick():
             self._t += 0.02
-            for i, name in enumerate(("Vessel", "ROV 1", "ROV 2")):
+            for i, name in enumerate(ORDER):
                 a = self._t + i * 2.1
                 lx = math.cos(a) * w * 0.28
                 ly = math.sin(a * 0.7) * h * 0.28
@@ -511,8 +661,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 p = s.probe(x, y)
                 if p is None:
                     continue
-                z = 0.0 if name == "Vessel" else p.z + 40.0
-                self.view.targets.update(name, x, y, z, heading=math.degrees(a) % 360)
+                z = 0.0 if (name == "Vessel" and self.surf_b.isChecked()) else p.z
+                self.view.targets.update(name, x, y, z)
             self.view.plotter.render()
 
         self._demo = QtCore.QTimer(self)
@@ -524,5 +674,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, e):
         if self._demo:
             self._demo.stop()
+        if self.feed is not None:
+            self.feed.stop()
+            self.feed.wait(2000)
         self.view.close()
         super().closeEvent(e)

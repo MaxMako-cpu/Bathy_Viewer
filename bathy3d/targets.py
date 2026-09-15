@@ -15,12 +15,17 @@ from dataclasses import dataclass, field
 import numpy as np
 import pyvista as pv
 
-#: Default look of the three tracked bodies.
+#: Default look of the three tracked bodies. Names match feed.ORDER.
+#: The feed carries no heading, so all three are dots - the directional vessel
+#: glyph is kept in _glyph() for when a heading source exists.
 DEFAULT_TARGETS = {
-    "Vessel": {"color": "#f2c14e", "kind": "vessel", "size": 1.0},
-    "ROV 1": {"color": "#e8663d", "kind": "rov", "size": 0.75},
-    "ROV 2": {"color": "#4db6ac", "kind": "rov", "size": 0.75},
+    "Vessel": {"color": "#ff3ad2", "kind": "dot", "size": 1.15},   # magenta
+    "UHD333": {"color": "#ff3b30", "kind": "dot", "size": 0.9},    # red
+    "UHD334": {"color": "#2ecc50", "kind": "dot", "size": 0.9},    # green
 }
+
+#: Dot diameter in screen pixels, scaled by each target's ``size``.
+BASE_POINT_PX = 17.0
 
 
 @dataclass
@@ -102,11 +107,22 @@ class TargetLayer:
         if name in self.targets:
             self.targets[name].stale = True
 
+    def refresh(self) -> None:
+        """Redraw every target - used after a staleness change."""
+        for t in self.targets.values():
+            self._place(t)
+
     def clear_trail(self, name: str | None = None) -> None:
         for t in self.targets.values():
-            if name is None or t.name == name:
-                t.trail.clear()
-                self._place(t)
+            if name is not None and t.name != name:
+                continue
+            t.trail.clear()
+            # _place only draws a trail of 2+ points, so an emptied trail would
+            # otherwise leave the previous line actor on screen for ever.
+            bag = self._actors.get(t.name)
+            if bag and "trail" in bag:
+                self.plotter.remove_actor(bag.pop("trail"), render=False)
+            self._place(t)
 
     def clear(self) -> None:
         for bag in self._actors.values():
@@ -149,16 +165,15 @@ class TargetLayer:
         lz = t.z * self._ve
         bag = self._actors.setdefault(t.name, {})
 
-        if "marker" not in bag:
-            bag["marker"] = self.plotter.add_mesh(
-                self._glyph(t), color=t.color, smooth_shading=True,
-                name=f"tgt:{t.name}", render=False, pickable=False,
-            )
-        a = bag["marker"]
-        a.SetPosition(lx, ly, lz)
-        a.SetOrientation(0.0, 0.0, -t.heading if math.isfinite(t.heading) else 0.0)
-        a.GetProperty().SetOpacity(0.45 if t.stale else 1.0)
-        a.SetVisibility(self.visible)
+        # Screen-constant dots. A world-space glyph big enough to see across a
+        # 131 km grid would be wider than the vehicles are apart.
+        bag["marker"] = self.plotter.add_points(
+            np.array([[lx, ly, lz]], dtype=float), color=t.color,
+            point_size=BASE_POINT_PX * t.size, render_points_as_spheres=True,
+            name=f"tgt:{t.name}", render=False, pickable=False,
+            opacity=0.45 if t.stale else 1.0,
+        )
+        bag["marker"].SetVisibility(self.visible)
 
         bag["label"] = self.plotter.add_point_labels(
             np.array([[lx, ly, lz]], dtype=float), [t.name], name=f"lbl:{t.name}",
@@ -176,6 +191,9 @@ class TargetLayer:
                 render=False, pickable=False,
             )
             bag["stem"].SetVisibility(self.visible)
+        elif "stem" in bag:
+            # Back on the seabed - drop the line rather than leaving it hanging.
+            self.plotter.remove_actor(bag.pop("stem"), render=False)
 
         if len(t.trail) > 1:
             pts = np.asarray(t.trail, dtype=float).copy()
