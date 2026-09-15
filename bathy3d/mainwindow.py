@@ -115,6 +115,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._demo = None
         self.feed = None
         self._last_fix = None
+        self._framed_feed = None
         self._build_controls()
         self._build_readout()
         self._build_menu()
@@ -234,6 +235,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.zoom_b = QtWidgets.QPushButton("Zoom to targets")
         self.zoom_b.clicked.connect(self.zoom_to_targets)
         tl.addWidget(self.zoom_b)
+        self.follow_b = QtWidgets.QPushButton("Follow targets")
+        self.follow_b.setCheckable(True)
+        self.follow_b.setToolTip(
+            "Keep the camera centred on the vehicles as they move, "
+            "without changing zoom.")
+        tl.addWidget(self.follow_b)
         trails = QtWidgets.QPushButton("Clear trails")
         trails.clicked.connect(lambda: (self.view.targets.clear_trail(),
                                         self.view.plotter.render()))
@@ -346,9 +353,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         lg = QtWidgets.QGroupBox("Live positions")
         lv = QtWidgets.QVBoxLayout(lg)
-        self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 5)
+        self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 6)
         self.tgt_table.setHorizontalHeaderLabels(["Target", "Easting", "Northing",
-                                                  "Seabed m", "Age"])
+                                                  "Seabed m", "Speed", "Age"])
         self.tgt_table.verticalHeader().setVisible(False)
         self.tgt_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.tgt_table.horizontalHeader().setSectionResizeMode(
@@ -358,7 +365,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item = QtWidgets.QTableWidgetItem(nm)
             item.setForeground(QtGui.QColor(DEFAULT_TARGETS[nm]["color"]))
             self.tgt_table.setItem(r, 0, item)
-            for c in range(1, 5):
+            for c in range(1, 6):
                 cell = QtWidgets.QTableWidgetItem("--")
                 cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self.tgt_table.setItem(r, c, cell)
@@ -572,6 +579,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.feed = PositionFeed(self.port_s.value())
         self.feed.status.connect(self._feed_status)
         self.feed.fix.connect(self._on_fix)
+        self._framed_feed = False
         self.feed.start()
         self.listen_b.setText("Stop listening")
         self.port_s.setEnabled(False)
@@ -605,8 +613,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_row(r, e, n, None, "off grid")
                 continue
             z = 0.0 if surface_vessel else p.z
-            self.view.targets.update(nm, e, n, z)
-            self._set_row(r, e, n, None if p is None else -p.z, "0 s")
+            tgt = self.view.targets.update(nm, e, n, z)
+            self._set_row(r, e, n, None if p is None else -p.z, "0 s", tgt.speed)
+        if self._framed_feed is False:
+            # At full extent a pixel is ~90 m of seabed, so a vehicle moving at
+            # 0.6 m/s looks frozen. Frame them once when the first fix lands.
+            self._framed_feed = self.view.zoom_to_targets()
+        elif self.follow_b.isChecked():
+            self.view.follow_targets()
         self.view.plotter.render()
         self.fix_time.setText(
             f"Fix {fx.t:%H:%M:%S}Z  •  {self.feed.records if self.feed else 0} records"
@@ -615,11 +629,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.feed_stats.setText(
                 f"{self.feed.packets} pkt  {self.feed.records} rec  {self.feed.bad} bad")
 
-    def _set_row(self, r, e, n, depth, age):
+    def _set_row(self, r, e, n, depth, age, speed=None):
         self.tgt_table.item(r, 1).setText(f"{e:,.2f}")
         self.tgt_table.item(r, 2).setText(f"{n:,.2f}")
         self.tgt_table.item(r, 3).setText("--" if depth is None else f"{depth:,.1f}")
-        self.tgt_table.item(r, 4).setText(age)
+        self.tgt_table.item(r, 4).setText(
+            "--" if speed is None or not math.isfinite(speed) else f"{speed:.2f} m/s")
+        self.tgt_table.item(r, 5).setText(age)
 
     def _check_stale(self):
         if self.feed is None:
@@ -629,7 +645,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         age = time.monotonic() - self._last_fix
         for r in range(len(ORDER)):
-            self.tgt_table.item(r, 4).setText(f"{age:.0f} s")
+            self.tgt_table.item(r, 5).setText(f"{age:.0f} s")
         if age > STALE_AFTER:
             for nm in ORDER:
                 self.view.targets.mark_stale(nm)

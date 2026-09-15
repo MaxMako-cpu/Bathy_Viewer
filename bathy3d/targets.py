@@ -10,6 +10,7 @@ Step 2 (UDP) plugs in here and nowhere else.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -24,8 +25,27 @@ DEFAULT_TARGETS = {
     "UHD334": {"color": "#2ecc50", "kind": "dot", "size": 0.9},    # green
 }
 
-#: Dot diameter in screen pixels, scaled by each target's ``size``.
-BASE_POINT_PX = 17.0
+#: Dot diameter in screen pixels, scaled by each target's ``size``. Small
+#: enough that a short trail emerges from under the marker rather than hiding
+#: beneath it.
+BASE_POINT_PX = 12.0
+
+
+def _on_top(actor) -> None:
+    """Draw this actor over the terrain instead of letting relief bury it.
+
+    A target sitting on the seabed is at exactly the depth of the surface under
+    it, so any ridge between it and the camera hides it - and a tracking mark
+    you cannot see is worse than useless. Bias its depth towards the viewer.
+    """
+    try:
+        m = actor.GetMapper()
+        m.SetResolveCoincidentTopologyToPolygonOffset()
+        m.SetRelativeCoincidentTopologyPointOffsetParameter(-66000)
+        m.SetRelativeCoincidentTopologyLineOffsetParameters(-66000, -66000)
+        m.SetRelativeCoincidentTopologyPolygonOffsetParameters(-66000, -66000)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -40,6 +60,8 @@ class Target:
     heading: float = float("nan")  # degrees from grid north
     stale: bool = True
     trail: list = field(default_factory=list)  # local-metre points
+    speed: float = float("nan")   # metres per second over the ground
+    updated_at: float = 0.0       # monotonic clock of the last fix
 
     @property
     def fix(self) -> bool:
@@ -93,6 +115,19 @@ class TargetLayer:
         if z is None and self.surface is not None:
             p = self.surface.probe(x, y)
             z = p.z if p else float("nan")
+        now = time.monotonic()
+        if t.fix and t.updated_at:
+            gap = now - t.updated_at
+            step = math.hypot(float(x) - t.x, float(y) - t.y)
+            if gap > 0.05:
+                # Lightly smoothed: the sender repeats the previous position
+                # when it has no new fix, which would read as a dead stop.
+                inst = step / gap
+                if math.isfinite(t.speed):
+                    t.speed = 0.6 * t.speed + 0.4 * inst
+                else:
+                    t.speed = inst
+        t.updated_at = now
         t.x, t.y, t.z, t.heading = float(x), float(y), float(z), float(heading)
         t.stale = False
         if t.fix and self.surface is not None:
@@ -174,6 +209,7 @@ class TargetLayer:
             opacity=0.45 if t.stale else 1.0,
         )
         bag["marker"].SetVisibility(self.visible)
+        _on_top(bag["marker"])
 
         bag["label"] = self.plotter.add_point_labels(
             np.array([[lx, ly, lz]], dtype=float), [t.name], name=f"lbl:{t.name}",
@@ -191,6 +227,7 @@ class TargetLayer:
                 render=False, pickable=False,
             )
             bag["stem"].SetVisibility(self.visible)
+            _on_top(bag["stem"])
         elif "stem" in bag:
             # Back on the seabed - drop the line rather than leaving it hanging.
             self.plotter.remove_actor(bag.pop("stem"), render=False)
@@ -199,7 +236,8 @@ class TargetLayer:
             pts = np.asarray(t.trail, dtype=float).copy()
             pts[:, 2] *= self._ve
             bag["trail"] = self.plotter.add_mesh(
-                pv.lines_from_points(pts), color=t.color, line_width=2, opacity=0.8,
+                pv.lines_from_points(pts), color=t.color, line_width=2, opacity=0.9,
                 name=f"trail:{t.name}", render=False, pickable=False,
             )
             bag["trail"].SetVisibility(self.visible)
+            _on_top(bag["trail"])

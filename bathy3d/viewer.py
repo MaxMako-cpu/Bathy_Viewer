@@ -226,6 +226,35 @@ class TerrainView(QtWidgets.QWidget):
     def reset_view(self) -> None:
         self.set_view(210.0, 28.0)
 
+    def follow_targets(self) -> bool:
+        """Re-centre on the vehicles without changing zoom or view angle.
+
+        Separate from :meth:`zoom_to_targets` because once you have framed the
+        vehicles you want to keep your chosen scale as they move, not have it
+        re-fitted every second.
+        """
+        if self.surface is None:
+            return False
+        pts = [(*self.surface.local_from_crs(t.x, t.y), t.z * self.ve)
+               for t in self.targets.targets.values() if t.fix]
+        if not pts:
+            return False
+        xs, ys, zs = zip(*pts)
+        centre = np.array([sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs)])
+        cam = self.plotter.camera
+        offset = np.asarray(cam.position, float) - np.asarray(cam.focal_point, float)
+        self.plotter.camera_position = [tuple(centre + offset), tuple(centre), (0, 0, 1)]
+        self.plotter.renderer.ResetCameraClippingRange()
+        return True
+
+    def metres_per_pixel(self) -> float:
+        """Ground scale at the focal point - how much motion a pixel is worth."""
+        cam = self.plotter.camera
+        d = float(np.linalg.norm(np.asarray(cam.position, float)
+                                 - np.asarray(cam.focal_point, float)))
+        h = max(self.plotter.window_size[1], 1)
+        return 2.0 * math.tan(math.radians(cam.view_angle) / 2.0) * d / h
+
     def zoom_to_targets(self) -> bool:
         """Frame the tracked vehicles, keeping the current view direction.
 
