@@ -43,6 +43,9 @@ _REC = re.compile(
     % (2 * len(ORDER), _DATE)
 )
 
+#: A run of digits and dots with no delimiter of any kind.
+_GLUED_NUM = re.compile(r"[-+0-9.]+")
+
 #: Never let a partial-record buffer grow without bound.
 _MAX_CARRY = 4096
 
@@ -92,7 +95,24 @@ def _all_numeric(buf: str):
     return out
 
 
-def parse_records(buf: str, stream: bool = True) -> tuple[list[Fix], str]:
+def _glued_numeric(buf: str):
+    """Numbers written end to end with no delimiter, e.g. ``657.3006487.764``.
+
+    Only safe because every field carries the same number of decimals; the
+    split is accepted only if the pieces reassemble into exactly the input.
+    """
+    s = buf.strip()
+    if not s or not _GLUED_NUM.fullmatch(s):
+        return None
+    for dp in (3, 2, 4, 1):
+        parts = re.findall(r"[-+]?\d+\.\d{%d}" % dp, s)
+        if parts and "".join(parts) == s:
+            return [float(p) for p in parts]
+    return None
+
+
+def parse_records(buf: str, stream: bool = True,
+                  allow_bare: bool = True) -> tuple[list[Fix], str]:
     """Pull every complete record out of ``buf``.
 
     Returns the fixes and the trailing text that was not a complete record, so a
@@ -126,14 +146,16 @@ def parse_records(buf: str, stream: bool = True) -> tuple[list[Fix], str]:
             return fixes, buf[spans[-1][0]:][-_MAX_CARRY:]
         return fixes, buf[spans[-1][1]:].lstrip("\r\n \t")[-_MAX_CARRY:]
 
-    # No timestamped record. Some senders omit the timestamp entirely; accept a
-    # buffer that is a whole number of coordinate records and nothing else.
-    # Anything ragged is held rather than guessed: pairing coordinates off a
-    # mid-record slice would put the vehicles somewhere they are not.
-    if stream and not terminated:
+    # No timestamped record. If this feed has never carried a timestamp, then
+    # there is no in-band record boundary at all and the datagram itself is the
+    # only framing there is - so decode it whole rather than holding bytes that
+    # nothing will ever come along to terminate.
+    if not allow_bare:
         return [], buf[-_MAX_CARRY:]
     want = 2 * len(ORDER)
     nums = _all_numeric(buf)
+    if nums is None:
+        nums = _glued_numeric(buf)
     if nums and len(nums) % want == 0:
         now = datetime.now(timezone.utc)
         for k in range(0, len(nums), want):
@@ -156,6 +178,19 @@ def explain(buf: str) -> str:
     m = re.search(_DATE, buf)
     if not m:
         head = buf[:40]
+        # Digits and dots only: the sender is writing numbers with no delimiter
+        # between them. Show the fixed-decimals split so the real field layout
+        # can be read off the message instead of guessed at.
+        if _GLUED_NUM.fullmatch(buf.strip()):
+            for dp in (3, 2, 4):
+                parts = re.findall(r"[-+]?\d+\.\d{%d}" % dp, buf)
+                if parts and "".join(parts) == buf.strip():
+                    return (f"no separators at all - the numbers run together. "
+                            f"Split at {dp} decimal places gives {len(parts)} "
+                            f"values: {', '.join(parts[:8])}"
+                            + (" ..." if len(parts) > 8 else ""))
+            return (f"no separators and no consistent decimal width - "
+                    f"starts {head!r}")
         return (f"no ISO-8601 timestamp found - record starts {head!r}. "
                 "Expected something like 2026-09-15T21:39:04.4609743Z")
     after = buf[m.end():]
@@ -202,6 +237,10 @@ class PositionFeed(QtCore.QThread):
         self.last_addr = ""
         self.last_packet_at = 0.0
         self.started_at = 0.0
+        #: Once a timestamped record decodes, never fall back to
+        #: delimiter-free parsing - a mid-record slice of a timestamped
+        #: stream is all digits too, and would decode to nonsense.
+        self.saw_timestamp = False
 
     def stop(self) -> None:
         self._stop.set()
@@ -243,7 +282,9 @@ class PositionFeed(QtCore.QThread):
                     # held record, so take it at its word rather than sit on
                     # the last known position for ever.
                     if carry and time.monotonic() - self.last_packet_at > 1.5:
-                        flushed, carry = parse_records(carry, stream=False)
+                        flushed, carry = parse_records(
+                            carry, stream=False,
+                            allow_bare=not self.saw_timestamp)
                         self.carry_len = len(carry)
                         for f in flushed:
                             self.records += 1
@@ -262,11 +303,14 @@ class PositionFeed(QtCore.QThread):
                 # line terminators a datagram routinely starts mid-record, and
                 # judging it on its own reports a fault that isn't there.
                 self.last_pending = pending[:220]
-                fixes, carry = parse_records(pending)
+                fixes, carry = parse_records(
+                    pending, allow_bare=not self.saw_timestamp)
                 self.carry_len = len(carry)
                 if not fixes and not carry:
                     self.bad += 1
                 for f in fixes:
+                    if f.timed:
+                        self.saw_timestamp = True
                     self.records += 1
                     self.fix.emit(f)
         finally:

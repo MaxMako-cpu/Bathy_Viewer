@@ -96,6 +96,30 @@ def part1_parsing():
         fixes, _ = parse_records(junk, stream=False)
         check(f"rejects {tag}", fixes == [])
 
+    # Delimiter-free senders: numbers written end to end, no commas, no
+    # timestamp - the datagram itself is the only record boundary.
+    glued = "".join(f"{v:.3f}" for v in EXPECT[-1])
+    fixes, carry = parse_records(glued)
+    ok = (len(fixes) == 1 and not carry and not fixes[0].timed
+          and [round(v, 3) for nm in ORDER for v in fixes[0].pos[nm]]
+          == [round(v, 3) for v in EXPECT[-1]])
+    check("delimiter-free record decodes", ok,
+          f"{len(fixes)} fixes from {glued[:40]}...")
+
+    fixes, _ = parse_records(glued + glued)
+    check("two delimiter-free records in one datagram", len(fixes) == 2,
+          f"{len(fixes)} fixes")
+
+    # ...but never when this sender is known to use timestamps: a mid-record
+    # slice of a timestamped stream is all digits too.
+    fixes, _ = parse_records(glued, allow_bare=False)
+    check("delimiter-free parsing off for a timestamped feed", fixes == [])
+
+    mid = "3009045.862707036.826"          # a slice, not a whole record
+    fixes, _ = parse_records(mid)
+    check("rejects a delimiter-free slice with the wrong field count",
+          fixes == [], f"{len(fixes)} fixes")
+
     # Timestamp-free senders: bare coordinate records, with and without lines.
     bare = ",".join(f"{v:.3f}" for v in EXPECT[-1])
     for tag, buf in (("bare record", bare),
