@@ -622,7 +622,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tgt_table.item(r, 4).setText(age)
 
     def _check_stale(self):
-        if self.feed is None or self._last_fix is None:
+        if self.feed is None:
+            return
+        self._report_feed()
+        if self._last_fix is None:
             return
         age = time.monotonic() - self._last_fix
         for r in range(len(ORDER)):
@@ -632,6 +635,36 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.view.targets.mark_stale(nm)
             self.view.targets.refresh()
             self.view.plotter.render()
+
+    def _report_feed(self):
+        """Say what the socket is actually seeing, fix or no fix.
+
+        Counting only decoded fixes hides the two failures that matter most:
+        nothing arriving at all, and datagrams arriving in a shape we cannot
+        read. They need different answers, so they need different messages.
+        """
+        f = self.feed
+        self.feed_stats.setText(
+            f"{f.packets} pkt   {f.records} rec   {f.bad} unreadable")
+        if f.packets == 0:
+            waited = time.monotonic() - f.started_at if f.started_at else 0.0
+            self.feed_status.setText(
+                f"Listening on UDP {f.port} - no datagrams yet ({waited:.0f}s).\n"
+                "Check the sender's destination address and port, and that "
+                "Windows Firewall allows inbound UDP for python.exe.")
+            self.feed_status.setStyleSheet("color: #e5b15a;")
+            return
+        quiet = time.monotonic() - f.last_packet_at
+        if f.records == 0:
+            self.feed_status.setText(
+                f"{f.packets} datagrams from {f.last_addr}, but none decoded. "
+                f"Last: {f.last_raw[:120]!r}")
+            self.feed_status.setStyleSheet("color: #e8663d;")
+        else:
+            self.feed_status.setText(
+                f"Listening on UDP {f.port} - {f.last_addr}, "
+                f"last packet {quiet:.0f}s ago")
+            self.feed_status.setStyleSheet("color: #7f98a1;")
 
     # --------------------------------------------- demo feed for the targets
 

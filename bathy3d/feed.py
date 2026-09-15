@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import re
 import socket
+import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -108,6 +110,12 @@ class PositionFeed(QtCore.QThread):
         self.packets = 0
         self.records = 0
         self.bad = 0
+        # Diagnostics, read by the GUI once a second. Plain ints and strings,
+        # so no lock is needed to look at them from the other thread.
+        self.last_raw = ""
+        self.last_addr = ""
+        self.last_packet_at = 0.0
+        self.started_at = 0.0
 
     def stop(self) -> None:
         self._stop.set()
@@ -129,6 +137,7 @@ class PositionFeed(QtCore.QThread):
             return
 
         sock.settimeout(0.4)
+        self.started_at = time.monotonic()
         self.status.emit(f"Listening on UDP {self.port}", True)
         carry = ""
         try:
@@ -141,12 +150,11 @@ class PositionFeed(QtCore.QThread):
                     self.status.emit(f"Socket error - {exc}", False)
                     break
                 self.packets += 1
-                try:
-                    text = carry + data.decode("ascii", errors="replace")
-                except Exception:
-                    self.bad += 1
-                    continue
-                fixes, carry = parse_records(text)
+                self.last_packet_at = time.monotonic()
+                self.last_addr = f"{_addr[0]}:{_addr[1]}"
+                raw = data.decode("ascii", errors="replace")
+                self.last_raw = raw[:220]
+                fixes, carry = parse_records(carry + raw)
                 if not fixes and not carry:
                     self.bad += 1
                 for f in fixes:
@@ -155,3 +163,47 @@ class PositionFeed(QtCore.QThread):
         finally:
             sock.close()
             self.status.emit("Stopped", False)
+
+
+def _sniff(argv):
+    """`python -m bathy3d.feed [port]` - print raw datagrams and what they decode to."""
+    port = int(argv[1]) if len(argv) > 1 else DEFAULT_PORT
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    except OSError:
+        pass
+    try:
+        sock.bind(("0.0.0.0", port))
+    except OSError as exc:
+        print(f"cannot bind UDP {port}: {exc}")
+        return 1
+    print(f"listening on UDP 0.0.0.0:{port} - Ctrl+C to stop")
+    n = 0
+    carry = ""
+    try:
+        while True:
+            data, addr = sock.recvfrom(65535)
+            n += 1
+            raw = data.decode("ascii", errors="replace")
+            fixes, carry = parse_records(carry + raw)
+            print("")
+            print(f"[{n}] {len(data)} bytes from {addr[0]}:{addr[1]}")
+            print(f"    raw: {raw[:200]!r}")
+            if fixes:
+                for f in fixes:
+                    pretty = "  ".join(f"{k} {v[0]:.3f}E {v[1]:.3f}N"
+                                       for k, v in f.pos.items())
+                    print(f"    ok : {f.t:%H:%M:%S}Z  {pretty}")
+            else:
+                print(f"    !! no complete record decoded (carry {len(carry)} chars)")
+    except KeyboardInterrupt:
+        print("stopped")
+    finally:
+        sock.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_sniff(sys.argv))
