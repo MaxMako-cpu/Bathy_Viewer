@@ -1,0 +1,356 @@
+"""Surface model for a single-band GeoTIFF.
+
+Two grids are kept side by side:
+
+* ``z_probe`` - native resolution (or as close as the memory budget allows).
+  Every cursor readout is answered from this array, so depth and slope are
+  never the smoothed values of the display mesh.
+* ``z_disp``  - block-averaged for the 3D mesh, sized to a point budget so VTK
+  stays interactive on a 100-megapixel raster.
+
+All geometry handed to the viewer is in **local metres** relative to the raster
+centre, which keeps the scene metric whether the source CRS is UTM or geographic.
+"""
+
+from __future__ import annotations
+
+import math
+import warnings
+from dataclasses import dataclass, field
+
+import numpy as np
+import rasterio
+from rasterio.enums import Resampling
+from pyproj import CRS as PjCRS, Geod, Transformer
+
+GEOD = Geod(ellps="WGS84")
+
+#: Points in the display mesh. ~1.5 M keeps rotation smooth on integrated GPUs.
+DEFAULT_POINT_BUDGET = 1_500_000
+#: Ceiling for the native-resolution probe array held in RAM.
+DEFAULT_PROBE_BYTES = 1_200_000_000
+
+#: Sentinels seen in the wild when a file declares no nodata value of its own.
+SENTINELS = (-32767.0, -32768.0, -9999.0, -99999.0, -3.4028234663852886e38)
+
+
+class RasterError(RuntimeError):
+    """The file cannot be shown as a surface."""
+
+
+def _block_mean(a: np.ndarray, step: int) -> np.ndarray:
+    """Mean of ``step`` x ``step`` blocks, ignoring NaN, padding the far edge."""
+    if step == 1:
+        return a.astype(np.float32, copy=False)
+    h, w = a.shape
+    ph, pw = (-h) % step, (-w) % step
+    if ph or pw:
+        a = np.pad(a, ((0, ph), (0, pw)), constant_values=np.nan)
+    hh, ww = a.shape
+    blocks = a.reshape(hh // step, step, ww // step, step)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN blocks
+        out = np.nanmean(blocks, axis=(1, 3))
+    return out.astype(np.float32)
+
+
+@dataclass
+class Probe:
+    """What the pointer found at one spot on the seabed."""
+
+    x: float  # CRS easting / longitude
+    y: float  # CRS northing / latitude
+    z: float  # elevation in metres, positive up (NaN outside data)
+    slope: float  # degrees from horizontal
+    aspect: float  # downslope bearing, degrees from grid north (NaN if flat)
+    row: float
+    col: float
+    lon: float = float("nan")
+    lat: float = float("nan")
+
+
+@dataclass
+class Surface:
+    path: str
+    width: int
+    height: int
+    transform: object
+    crs: object
+    nodata: float | None
+    band_count: int
+    z_probe: np.ndarray
+    probe_step: int
+    z_disp: np.ndarray
+    step: int
+    # derived
+    px: float = 0.0  # pixel size, CRS x units
+    py: float = 0.0  # pixel size, CRS y units
+    mx: float = 1.0  # metres per CRS x unit at the raster centre
+    my: float = 1.0  # metres per CRS y unit
+    x0: float = 0.0  # CRS x of the west edge
+    y0: float = 0.0  # CRS y of the north edge
+    cx: float = 0.0  # CRS x of the centre
+    cy: float = 0.0
+    _to_ll: object = field(default=None, repr=False)
+
+    # ---------------------------------------------------------------- geometry
+
+    @property
+    def geographic(self) -> bool:
+        return bool(getattr(self.crs, "is_geographic", False))
+
+    @property
+    def cell_m(self) -> float:
+        """Display-mesh cell size in metres (mean of the two axes)."""
+        return (self.px * self.mx * self.step + self.py * self.my * self.step) / 2.0
+
+    @property
+    def native_cell_m(self) -> float:
+        return (self.px * self.mx + self.py * self.my) / 2.0
+
+    @property
+    def extent_m(self) -> tuple[float, float]:
+        return self.width * self.px * self.mx, self.height * self.py * self.my
+
+    def local_from_crs(self, x: float, y: float) -> tuple[float, float]:
+        return (x - self.cx) * self.mx, (y - self.cy) * self.my
+
+    def crs_from_local(self, lx: float, ly: float) -> tuple[float, float]:
+        return lx / self.mx + self.cx, ly / self.my + self.cy
+
+    def rowcol_from_crs(self, x: float, y: float) -> tuple[float, float]:
+        """Fractional pixel index, where an integer lands on a pixel *centre*.
+
+        The -0.5 is what makes this the exact inverse of :meth:`crs_from_rowcol`;
+        without it every probe samples the corner between four pixels.
+        """
+        return (self.y0 - y) / self.py - 0.5, (x - self.x0) / self.px - 0.5
+
+    def crs_from_rowcol(self, row: float, col: float) -> tuple[float, float]:
+        """CRS coordinates of the centre of the given (fractional) pixel."""
+        return self.x0 + (col + 0.5) * self.px, self.y0 - (row + 0.5) * self.py
+
+    def to_lonlat(self, x: float, y: float) -> tuple[float, float]:
+        if self._to_ll is None:
+            return float("nan"), float("nan")
+        lon, lat = self._to_ll.transform(x, y)
+        return lon, lat
+
+    # ----------------------------------------------------------------- queries
+
+    def probe(self, x: float, y: float) -> Probe | None:
+        """Sample depth, slope and aspect at a CRS position, at native resolution."""
+        row, col = self.rowcol_from_crs(x, y)
+        r = row / self.probe_step
+        c = col / self.probe_step
+        z = self._bilinear(r, c)
+        if not np.isfinite(z):
+            return None
+        slope, aspect = self._slope_aspect(int(round(r)), int(round(c)))
+        lon, lat = self.to_lonlat(x, y)
+        return Probe(x, y, float(z), slope, aspect, row, col, lon, lat)
+
+    def _bilinear(self, r: float, c: float) -> float:
+        a = self.z_probe
+        h, w = a.shape
+        # The outer half pixel sits beyond the last centre; clamp rather than
+        # punching a transparent border round the whole grid.
+        if -0.5 <= r < 0:
+            r = 0.0
+        if -0.5 <= c < 0:
+            c = 0.0
+        if h - 1 < r <= h - 0.5:
+            r = h - 1.0
+        if w - 1 < c <= w - 0.5:
+            c = w - 1.0
+        if not (0 <= r <= h - 1 and 0 <= c <= w - 1):
+            return float("nan")
+        r0, c0 = int(math.floor(r)), int(math.floor(c))
+        r1, c1 = min(h - 1, r0 + 1), min(w - 1, c0 + 1)
+        fr, fc = r - r0, c - c0
+        q = (a[r0, c0], a[r0, c1], a[r1, c0], a[r1, c1])
+        if not all(np.isfinite(v) for v in q):
+            return float("nan")
+        top = q[0] * (1 - fc) + q[1] * fc
+        bot = q[2] * (1 - fc) + q[3] * fc
+        return float(top * (1 - fr) + bot * fr)
+
+    def _slope_aspect(self, r: int, c: int) -> tuple[float, float]:
+        """Central-difference slope (deg) and downslope bearing at a probe cell."""
+        a = self.z_probe
+        h, w = a.shape
+        r = min(max(r, 0), h - 1)
+        c = min(max(c, 0), w - 1)
+        rl, rr = max(0, r - 1), min(h - 1, r + 1)
+        cl, cr = max(0, c - 1), min(w - 1, c + 1)
+        zl, zr = a[r, cl], a[r, cr]
+        zu, zd = a[rl, c], a[rr, c]
+        if not all(np.isfinite(v) for v in (zl, zr, zu, zd)):
+            return float("nan"), float("nan")
+        dx_m = (cr - cl) * self.px * self.mx * self.probe_step
+        dy_m = (rr - rl) * self.py * self.my * self.probe_step
+        if dx_m <= 0 or dy_m <= 0:
+            return float("nan"), float("nan")
+        ge = (zr - zl) / dx_m  # dz/dEast
+        gn = (zu - zd) / dy_m  # dz/dNorth (row index grows southward)
+        slope = math.degrees(math.atan(math.hypot(ge, gn)))
+        if ge == 0.0 and gn == 0.0:
+            return slope, float("nan")
+        aspect = (math.degrees(math.atan2(-ge, -gn)) + 360.0) % 360.0
+        return slope, aspect
+
+    def horizontal_distance(self, x1, y1, x2, y2) -> float:
+        """Metres between two CRS positions - grid distance, or geodesic if degrees."""
+        if self.geographic:
+            _, _, d = GEOD.inv(x1, y1, x2, y2)
+            return float(d)
+        return float(math.hypot((x2 - x1) * self.mx, (y2 - y1) * self.my))
+
+    def bearing(self, x1, y1, x2, y2) -> float:
+        if self.geographic:
+            az, _, _ = GEOD.inv(x1, y1, x2, y2)
+            return float(az % 360.0)
+        return float((math.degrees(math.atan2(x2 - x1, y2 - y1)) + 360.0) % 360.0)
+
+    # ------------------------------------------------------------- mesh arrays
+
+    def display_slope(self) -> np.ndarray:
+        """Slope of the *display* grid, degrees - for colour-by-slope only."""
+        dx = self.px * self.mx * self.step
+        dy = self.py * self.my * self.step
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            gy, gx = np.gradient(self.z_disp.astype(np.float64), dy, dx)
+        return np.degrees(np.arctan(np.hypot(gx, gy))).astype(np.float32)
+
+
+def _detect_nodata(z: np.ndarray, declared) -> float | None:
+    if declared is not None and np.isfinite(declared):
+        return float(declared)
+    finite = z[np.isfinite(z)]
+    if finite.size == 0:
+        return None
+    lo, hi = float(finite.min()), float(finite.max())
+    for s in SENTINELS:
+        if math.isclose(lo, s, rel_tol=1e-6, abs_tol=1e-3):
+            return s
+        if math.isclose(hi, -s, rel_tol=1e-6, abs_tol=1e-3) and s < 0:
+            return -s
+    return None
+
+
+def load(
+    path: str,
+    band: int = 1,
+    point_budget: int = DEFAULT_POINT_BUDGET,
+    probe_bytes: int = DEFAULT_PROBE_BYTES,
+    progress=None,
+) -> Surface:
+    """Open a GeoTIFF (or anything GDAL reads) as a :class:`Surface`."""
+
+    def say(pct, msg):
+        if progress:
+            progress(pct, msg)
+
+    say(2, "opening")
+    with rasterio.open(path) as ds:
+        if ds.count < 1:
+            raise RasterError("file has no raster bands")
+        if band > ds.count:
+            band = 1
+        tr = ds.transform
+        if abs(tr.b) > 1e-9 or abs(tr.d) > 1e-9:
+            raise RasterError(
+                "rotated / sheared rasters are not supported - reproject to a "
+                "north-up grid first (gdalwarp)"
+            )
+
+        n_px = ds.width * ds.height
+        probe_step = 1
+        if n_px * 4 > probe_bytes:
+            probe_step = int(math.ceil(math.sqrt(n_px * 4 / probe_bytes)))
+
+        say(8, "reading grid")
+        if probe_step == 1:
+            z = ds.read(band, out_dtype="float32")
+        else:
+            # Nearest, never average: averaging would blend the nodata sentinel
+            # into real depths and quietly poison every cell next to a gap.
+            z = ds.read(
+                band,
+                out_shape=(ds.height // probe_step, ds.width // probe_step),
+                resampling=Resampling.nearest,
+                out_dtype="float32",
+            )
+        meta = dict(
+            width=ds.width,
+            height=ds.height,
+            transform=tr,
+            crs=ds.crs,
+            nodata=ds.nodata,
+            band_count=ds.count,
+        )
+
+    say(45, "masking nodata")
+    z = np.where(np.isfinite(z), z, np.nan)
+    nod = _detect_nodata(z, meta["nodata"])
+    if nod is not None:
+        z[z == np.float32(nod)] = np.nan
+    if not np.isfinite(z).any():
+        raise RasterError("every cell is nodata")
+
+    say(60, "building display grid")
+    full_step = max(1, int(math.ceil(math.sqrt(n_px / max(point_budget, 1)))))
+    step = max(1, int(round(full_step / probe_step)))
+    z_disp = _block_mean(z, step)
+
+    say(85, "projecting")
+    crs = meta["crs"]
+    pj = PjCRS.from_user_input(crs.to_wkt()) if crs else None
+    to_ll = None
+    if pj is not None:
+        try:
+            to_ll = Transformer.from_crs(pj, PjCRS.from_epsg(4326), always_xy=True)
+        except Exception:
+            to_ll = None
+
+    px, py = abs(tr.a), abs(tr.e)
+    x0, y0 = tr.c, tr.f
+    cx = x0 + meta["width"] * tr.a / 2.0
+    cy = y0 + meta["height"] * tr.e / 2.0
+
+    if pj is None:
+        mx = my = 1.0
+    elif pj.is_geographic:
+        _, _, my = GEOD.inv(cx, cy - 0.5, cx, cy + 0.5)
+        _, _, mx = GEOD.inv(cx - 0.5, cy, cx + 0.5, cy)
+    else:
+        try:
+            mx = my = float(pj.axis_info[0].unit_conversion_factor)
+        except Exception:
+            mx = my = 1.0
+
+    surf = Surface(
+        path=path,
+        width=meta["width"],
+        height=meta["height"],
+        transform=tr,
+        crs=pj if pj is not None else crs,
+        nodata=nod,
+        band_count=meta["band_count"],
+        z_probe=z,
+        probe_step=probe_step,
+        z_disp=z_disp,
+        step=step * probe_step,
+        px=px,
+        py=py,
+        mx=mx,
+        my=my,
+        x0=x0,
+        y0=y0,
+        cx=cx,
+        cy=cy,
+        _to_ll=to_ll,
+    )
+    say(100, "ready")
+    return surf

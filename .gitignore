@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# App output
+*_line.csv
+*_view.png
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
