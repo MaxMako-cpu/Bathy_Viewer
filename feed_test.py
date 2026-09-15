@@ -30,6 +30,16 @@ SAMPLE = [
 ]
 EXPECT = [[float(x) for x in r.split(",")[1:]] for r in SAMPLE]
 
+#: The live format, transcribed from the survey PC's ASCII decode window.
+#: Six fields per record - Vessel E/N, UHD333 E/N, UHD334 E/N - with no
+#: timestamp and no separator of any kind between one record and the next.
+LIVE = [
+    "706148.701,3006428.410,705939.201,3006546.099,706515.275,3006391.404",
+    "706147.905,3006427.067,705938.649,3006545.291,706514.526,3006390.021",
+    "706147.394,3006426.146,705938.073,3006544.431,706514.284,3006389.585",
+    "706147.132,3006425.672,705937.781,3006543.999,706513.567,3006388.189",
+]
+
 FAILED = []
 
 
@@ -99,26 +109,59 @@ def part1_parsing():
     # Delimiter-free senders: numbers written end to end, no commas, no
     # timestamp - the datagram itself is the only record boundary.
     glued = "".join(f"{v:.3f}" for v in EXPECT[-1])
-    fixes, carry = parse_records(glued)
+    fixes, carry = parse_records(glued, stream=False)
     ok = (len(fixes) == 1 and not carry and not fixes[0].timed
           and [round(v, 3) for nm in ORDER for v in fixes[0].pos[nm]]
           == [round(v, 3) for v in EXPECT[-1]])
     check("delimiter-free record decodes", ok,
           f"{len(fixes)} fixes from {glued[:40]}...")
 
-    fixes, _ = parse_records(glued + glued)
+    fixes, _ = parse_records(glued + glued, stream=False)
     check("two delimiter-free records in one datagram", len(fixes) == 2,
           f"{len(fixes)} fixes")
 
     # ...but never when this sender is known to use timestamps: a mid-record
     # slice of a timestamped stream is all digits too.
-    fixes, _ = parse_records(glued, allow_bare=False)
+    fixes, _ = parse_records(glued, stream=False, allow_bare=False)
     check("delimiter-free parsing off for a timestamped feed", fixes == [])
 
     mid = "3009045.862707036.826"          # a slice, not a whole record
-    fixes, _ = parse_records(mid)
+    fixes, _ = parse_records(mid, stream=False)
     check("rejects a delimiter-free slice with the wrong field count",
           fixes == [], f"{len(fixes)} fixes")
+
+    # The format actually on the wire, read off the survey PC's own decode
+    # window: six comma-separated fields per record, and consecutive records
+    # written back to back with NOTHING between them - no timestamp, no
+    # terminator. The only mark of a boundary is a field's three decimals
+    # running straight into the next field's digits.
+    live_wire = "".join(LIVE)
+    expect_live = [[float(x) for x in r.split(",")] for r in LIVE]
+    check("real format: no separator between records",
+          "3006391.404706147.905" in live_wire)
+
+    fixes, carry = parse_records(live_wire, stream=False)
+    vals = [[v for nm in ORDER for v in f.pos[nm]] for f in fixes]
+    check("real format decodes whole", vals == expect_live,
+          f"{len(fixes)}/{len(LIVE)} records, carry {len(carry)}")
+
+    for size in (7, 19, 40, 67, 68, 101, 256, 1500):
+        carry, got = "", []
+        for k in range(0, len(live_wire), size):
+            f2, carry = parse_records(carry + live_wire[k:k + size])
+            got.extend(f2)
+        f3, carry = parse_records(carry, stream=False)
+        got.extend(f3)
+        vals = [[v for nm in ORDER for v in f.pos[nm]] for f in got]
+        check(f"real format resyncs at {size}-byte datagrams",
+              vals == expect_live, f"{len(got)}/{len(LIVE)} records")
+
+    # every decoded value must be a plausible UTM 15N position, not a
+    # truncation - eastings ~7.0e5, northings ~3.0e6 for this survey
+    fixes, _ = parse_records(live_wire, stream=False)
+    sane = all(6.9e5 < e < 7.2e5 and 3.00e6 < n < 3.01e6
+               for f in fixes for e, n in f.pos.values())
+    check("no truncated value passed as a coordinate", sane)
 
     # Timestamp-free senders: bare coordinate records, with and without lines.
     bare = ",".join(f"{v:.3f}" for v in EXPECT[-1])

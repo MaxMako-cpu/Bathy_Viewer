@@ -1,16 +1,24 @@
 """Live position feed over UDP.
 
-Wire format, one record per datagram at about 1 Hz::
+The wire format, as sent by the survey PC (one record, about 1 Hz)::
 
-    2026-09-15T21:39:04.4609743Z,707364.210,3009048.400,707036.708,3009161.042,707634.048,3009049.775
-    |__ ISO-8601 UTC, .NET "O" __| |__ Vessel E/N __| |__ UHD333 E/N __| |__ UHD334 E/N __|
+    706148.701,3006428.410,705939.201,3006546.099,706515.275,3006391.404
+    |__ Vessel E/N ____| |__ UHD333 E/N ____| |__ UHD334 E/N ____|
+
+Six comma-separated fields, three decimals each. No timestamp. And - the part
+that matters - **no separator between one record and the next**: they are
+written back to back, so the only mark of a boundary is a field's decimals
+running straight into the next field's digits::
+
+    ...,3006363.252706132.235,3006399.181,...
+                  ^ record ends here
 
 Eastings and northings are in the **loaded grid's CRS** (UTM 15N for the BOEM
-Gulf of Mexico grid), so they need no transform. No depth and no heading are
-carried - depth comes from the terrain.
+Gulf of Mexico grid), so they need no transform. No depth is carried - depth
+comes from the terrain under each position.
 
-The parser is deliberately forgiving about framing: records may arrive one per
-datagram, newline- or CRLF-separated, or run together with no separator at all.
+An earlier sample also carried an ISO-8601 timestamp per record; that form is
+still decoded, and the timestamp is used as the record boundary when present.
 """
 
 from __future__ import annotations
@@ -42,6 +50,10 @@ _REC = re.compile(
     r"(" + _DATE + r")((?:\s*,\s*" + _NUM + r"){%d})(?=\s*(?:%s|$))"
     % (2 * len(ORDER), _DATE)
 )
+
+#: Decimal places every field carries - the only thing that marks where
+#: one record ends and the next begins in a delimiter-free stream.
+_DECIMALS = 3
 
 #: A run of digits and dots with no delimiter of any kind.
 _GLUED_NUM = re.compile(r"[-+0-9.]+")
@@ -93,6 +105,17 @@ def _all_numeric(buf: str):
         except ValueError:
             return None
     return out
+
+
+#: Inside a record the fields are comma-separated, but consecutive records are
+#: written back to back with nothing between them, so the only mark of a record
+#: boundary is a field's decimals running straight into the next field's digits:
+#: ``...3006363.252706132.235...``. Put the missing separator back.
+_GLUE = re.compile(r"(\.\d{%d})(?=[-+]?\d)" % _DECIMALS)
+
+
+def _unglue(buf: str) -> str:
+    return _GLUE.sub(r"\1,", buf)
 
 
 def _glued_numeric(buf: str):
@@ -152,18 +175,45 @@ def parse_records(buf: str, stream: bool = True,
     # nothing will ever come along to terminate.
     if not allow_bare:
         return [], buf[-_MAX_CARRY:]
+
     want = 2 * len(ORDER)
-    nums = _all_numeric(buf)
-    if nums is None:
-        nums = _glued_numeric(buf)
-    if nums and len(nums) % want == 0:
-        now = datetime.now(timezone.utc)
-        for k in range(0, len(nums), want):
-            c = nums[k:k + want]
-            fixes.append(Fix(now, {nm: (c[2 * i], c[2 * i + 1])
-                                   for i, nm in enumerate(ORDER)}, timed=False))
-        return fixes, ""
-    return [], buf.lstrip("\r\n \t")[-_MAX_CARRY:]
+    toks = [t for t in re.split(r"[,;\t\r\n ]+", _unglue(buf).strip()) if t]
+    vals = []
+    for t in toks:
+        try:
+            vals.append(float(t))
+        except ValueError:
+            return [], buf.lstrip("\r\n \t")[-_MAX_CARRY:]
+    if not vals:
+        return [], ""
+
+    whole = len(vals) // want
+    # The final record is unconfirmed for the same reason as the timestamped
+    # case: if the datagram stopped mid-field its last value is truncated, and
+    # nothing in this format says otherwise until the next digits arrive.
+    if stream and not terminated and whole:
+        whole -= 1
+    if whole <= 0:
+        return [], buf.lstrip("\r\n \t")[-_MAX_CARRY:]
+
+    now = datetime.now(timezone.utc)
+    for k in range(0, whole * want, want):
+        c = vals[k:k + want]
+        fixes.append(Fix(now, {nm: (c[2 * i], c[2 * i + 1])
+                               for i, nm in enumerate(ORDER)}, timed=False))
+    consumed = _nth_field_end(_unglue(buf), whole * want)
+    return fixes, _unglue(buf)[consumed:].lstrip(",\r\n \t")[-_MAX_CARRY:]
+
+
+def _nth_field_end(text: str, n: int) -> int:
+    """Index just past the ``n``th comma-separated field in ``text``."""
+    seen = 0
+    for i, ch in enumerate(text):
+        if ch in ",;\t\r\n ":
+            seen += 1
+            if seen == n:
+                return i
+    return len(text)
 
 
 def explain(buf: str) -> str:
