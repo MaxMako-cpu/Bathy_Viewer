@@ -52,6 +52,8 @@ class TerrainView(QtWidgets.QWidget):
         self.ramp_name = "Bathy"
         self.color_by = "Depth"
         self.measuring = True
+        self.left_action = "pan"   # left-drag slides the map; shift-left orbits
+        self.lock_z = True         # ...and keeps the camera at one height
 
         self._terrain = None  # pv actor
         self._mesh = None
@@ -59,6 +61,8 @@ class TerrainView(QtWidgets.QWidget):
         self._clim_slope = (0.0, 30.0)
         self._last_hover = 0.0
         self._press_pos = None
+        self._drag_button = None
+        self._drag_z = None
         self._picker = vtkPropPicker()
 
         self.plotter.set_background("#0d1418", top="#16232a")
@@ -300,10 +304,90 @@ class TerrainView(QtWidgets.QWidget):
     # ------------------------------------------------------------- picking
 
     def _install_observers(self) -> None:
-        iren = self.plotter.iren
-        iren.add_observer("MouseMoveEvent", self._on_move)
-        iren.add_observer("LeftButtonPressEvent", self._on_press)
-        iren.add_observer("LeftButtonReleaseEvent", self._on_release)
+        # Everything hangs off the interactor *style*, not the interactor. The
+        # style aborts each event once it has handled it, so observers on the
+        # interactor miss button presses entirely - which silently cost the
+        # click-to-measure the first time this was wired up.
+        self.set_left_action(self.left_action)
+
+    def _attach_style_observers(self) -> None:
+        try:
+            style = self.plotter.iren.interactor.GetInteractorStyle()
+        except Exception:
+            return
+        style.AddObserver("MouseMoveEvent", self._style_move, -1.0)
+        style.AddObserver("LeftButtonPressEvent", self._style_press, -1.0)
+        style.AddObserver("LeftButtonReleaseEvent", self._style_release, -1.0)
+
+    # An observer on a style replaces its default handling, so each of these
+    # invokes the default itself and then adds our own behaviour.
+
+    def _style_move(self, style, _event):
+        try:
+            style.OnMouseMove()
+        except Exception:
+            pass
+        self._hold_height()
+        self._on_move()
+
+    def _style_press(self, style, _event):
+        self._on_press()
+        try:
+            style.OnLeftButtonDown()
+        except Exception:
+            pass
+
+    def _style_release(self, style, _event):
+        try:
+            style.OnLeftButtonUp()
+        except Exception:
+            pass
+        self._on_release()
+
+    # --------------------------------------------------------- camera control
+
+    def set_left_action(self, action: str) -> None:
+        """What a left-drag does: slide the map, or orbit around it.
+
+        Orbiting on left-drag is VTK's default and spins the scene about the
+        vertical axis, which is rarely what you want when you are reading a
+        map. Pan is the default here; orbit stays on shift-left-drag.
+        """
+        self.left_action = "orbit" if action == "orbit" else "pan"
+        try:
+            self.plotter.enable_custom_trackball_style(
+                left="rotate" if self.left_action == "orbit" else "pan",
+                shift_left="pan" if self.left_action == "orbit" else "rotate",
+                middle="pan", right="dolly",
+            )
+        except Exception:
+            pass
+        # enable_custom_trackball_style builds a fresh style object, so the
+        # observers have to be hung on the new one every time.
+        self._attach_style_observers()
+
+    def _hold_height(self):
+        """Undo the vertical component of a pan.
+
+        VTK pans in the plane of the screen, so on a tilted view sliding the
+        map sideways also changes your altitude and the whole scene creeps.
+        Camera and focal point are shifted together, so restoring both Z
+        values leaves the view direction untouched and keeps the horizontal
+        part of the move.
+
+        """
+        if not self.lock_z or self._drag_z is None:
+            return
+        if self._drag_button != "left" or self.left_action != "pan":
+            return
+        cam = self.plotter.camera
+        pz, fz = self._drag_z
+        pos, foc = list(cam.position), list(cam.focal_point)
+        if abs(pos[2] - pz) > 1e-9 or abs(foc[2] - fz) > 1e-9:
+            pos[2], foc[2] = pz, fz
+            cam.position = tuple(pos)
+            cam.focal_point = tuple(foc)
+            self.plotter.renderer.ResetCameraClippingRange()
 
     def _pick_crs(self):
         """CRS (x, y) under the pointer, or None if the ray missed the surface."""
@@ -331,8 +415,13 @@ class TerrainView(QtWidgets.QWidget):
             self._press_pos = self.plotter.iren.interactor.GetEventPosition()
         except Exception:
             self._press_pos = None
+        self._drag_button = "left"
+        cam = self.plotter.camera
+        self._drag_z = (cam.position[2], cam.focal_point[2])
 
     def _on_release(self, *_):
+        self._drag_button = None
+        self._drag_z = None
         if not self.measuring or self._press_pos is None or self.line is None:
             self._press_pos = None
             return

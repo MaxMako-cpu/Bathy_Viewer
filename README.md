@@ -34,12 +34,23 @@ Or drop a `.tif` onto the window. **File › Open** takes `.tif .tiff .vrt .img
 
 | Action | Control |
 | --- | --- |
-| Orbit | left-drag |
+| Move the map | left-drag |
+| Orbit | shift + left-drag |
 | Zoom | wheel |
 | Pan | middle-drag |
 | Drop a measuring station | left-click (Measure mode on) |
 | Remove last station | **Undo** |
 | Reset / plan view | View menu |
+
+Left-drag slides the map in X and Y rather than orbiting, because orbiting is
+rarely what you want while reading a chart. **Left drag** in the Pointer panel
+switches it back to Orbit if you prefer.
+
+**Keep camera height** (on by default) holds your altitude while you move.
+VTK pans in the plane of the screen, so on a tilted view sliding the map
+sideways also changes how high you are and the scene creeps away from you;
+camera and focal point are shifted together, so restoring both heights leaves
+the view direction untouched.
 
 The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing,
 CRS easting/northing, latitude/longitude, and the source pixel. The **Measured
@@ -84,6 +95,7 @@ smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
 overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 trail_test.py     trail checks: age trimming, 24 h volume, draw cost
+drag_test.py      camera checks: left-drag pans, height locked, click measures
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring

@@ -198,9 +198,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.meas_b.setChecked(True)
         self.meas_b.toggled.connect(lambda on: setattr(self.view, "measuring", on))
         ml.addWidget(self.meas_b)
+        drow = QtWidgets.QWidget()
+        dh = QtWidgets.QHBoxLayout(drow)
+        dh.setContentsMargins(0, 0, 0, 0)
+        dh.addWidget(self._key("Left drag"))
+        self.drag_c = QtWidgets.QComboBox()
+        self.drag_c.addItems(["Move map", "Orbit"])
+        self.drag_c.currentTextChanged.connect(
+            lambda t: self.view.set_left_action("orbit" if t == "Orbit" else "pan"))
+        dh.addWidget(self.drag_c, 1)
+        ml.addWidget(drow)
+        self.lockz_b = QtWidgets.QPushButton("Keep camera height")
+        self.lockz_b.setCheckable(True)
+        self.lockz_b.setChecked(True)
+        self.lockz_b.setToolTip(
+            "Moving the map on a tilted view normally changes your altitude "
+            "as well. This holds the height steady.")
+        self.lockz_b.toggled.connect(lambda on: setattr(self.view, "lock_z", on))
+        ml.addWidget(self.lockz_b)
         hint = QtWidgets.QLabel(
-            "Drag orbits · wheel zooms · middle-drag pans.\n"
-            "A click drops a station on the seabed."
+            "Left-drag moves the map · shift-left orbits\n"
+            "wheel zooms · a click drops a station."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
