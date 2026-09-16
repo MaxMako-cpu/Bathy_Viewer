@@ -81,6 +81,15 @@ class TerrainView(QtWidgets.QWidget):
         self.plotter.set_background("#0d1418", top="#16232a")
         self.plotter.add_axes(interactive=False)
         self._install_observers()
+        # Per frame, not per camera call: VTK moves the camera by routes this
+        # class never sees - its own dolly, a window resize, camera.Zoom() -
+        # and anything sized against the ground scale goes stale when it does.
+        # set_metres_per_pixel ignores changes under 2%, so this is cheap.
+        try:
+            self.plotter.renderer.AddObserver(
+                "StartEvent", lambda *_: self._sync_world_scale())
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ build
 
@@ -349,6 +358,13 @@ class TerrainView(QtWidgets.QWidget):
         span = math.dist((b[0], b[2], b[4]), (b[1], b[3], b[5]))
         return span if span > 1.0 else 1000.0
 
+    def _sync_world_scale(self) -> None:
+        """Tell the target layer the ground scale, for the TMS bodies."""
+        try:
+            self.targets.set_metres_per_pixel(self.metres_per_pixel())
+        except Exception:
+            pass
+
     def update_clipping(self) -> None:
         """Set the clipping range from the camera distance, not scene bounds.
 
@@ -362,6 +378,7 @@ class TerrainView(QtWidgets.QWidget):
         d = math.dist(cam.position, cam.focal_point)
         near = max(d * 0.0015, 0.02)
         cam.clipping_range = (near, d + self._scene_span() * 2.0)
+        self._sync_world_scale()
 
     def _style_wheel_in(self, _style, _event):
         self.zoom(1.0 / ZOOM_STEP)

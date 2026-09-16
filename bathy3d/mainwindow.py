@@ -12,7 +12,10 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import raster
-from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
+from .feed import (DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
+                   DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
+                   POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
+                   explain)
 from .measure import compass
 from . import ramps
 from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
@@ -130,7 +133,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._loader = None
         self._demo = None
         self.feed = None
+        self.dfeed = None
         self._last_fix = None
+        self._last_depth = None
+        self._positions = {}
+        self._depths = {}
         self._framed_feed = None
         self._ramp_choice = {}
         self._build_controls()
@@ -272,12 +279,18 @@ class MainWindow(QtWidgets.QMainWindow):
         prow = QtWidgets.QWidget()
         ph = QtWidgets.QHBoxLayout(prow)
         ph.setContentsMargins(0, 0, 0, 0)
-        ph.addWidget(self._key("UDP port"))
+        ph.addWidget(self._key("Positions"))
         self.port_s = QtWidgets.QSpinBox()
         self.port_s.setRange(1, 65535)
         self.port_s.setValue(DEFAULT_PORT)
         self.port_s.setGroupSeparatorShown(False)
         ph.addWidget(self.port_s, 1)
+        ph.addWidget(self._key("Depths"))
+        self.dport_s = QtWidgets.QSpinBox()
+        self.dport_s.setRange(1, 65535)
+        self.dport_s.setValue(DEFAULT_DEPTH_PORT)
+        self.dport_s.setGroupSeparatorShown(False)
+        ph.addWidget(self.dport_s, 1)
         tl.addWidget(prow)
 
         self.listen_b = QtWidgets.QPushButton("Start listening")
@@ -299,6 +312,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tgt_b.toggled.connect(lambda on: (self.view.targets.set_visible(on),
                                                self.view.plotter.render()))
         tl.addWidget(self.tgt_b)
+        self.tms_b = QtWidgets.QPushButton("Show TMS")
+        self.tms_b.setCheckable(True)
+        self.tms_b.setChecked(True)
+        self.tms_b.setToolTip(
+            "The tether management systems, drawn as 3 m x 2 m cylinders at "
+            "their own depth, each on a dotted tether to its ROV.")
+        self.tms_b.toggled.connect(self._tms_toggled)
+        tl.addWidget(self.tms_b)
         self.surf_b = QtWidgets.QPushButton("Vessel at sea surface")
         self.surf_b.setCheckable(True)
         self.surf_b.setChecked(False)
@@ -440,9 +461,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         lg = QtWidgets.QGroupBox("Live positions")
         lv = QtWidgets.QVBoxLayout(lg)
-        self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 6)
-        self.tgt_table.setHorizontalHeaderLabels(["Target", "Easting", "Northing",
-                                                  "Seabed m", "Speed", "Age"])
+        self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 7)
+        self.tgt_table.setHorizontalHeaderLabels(
+            ["Target", "Easting", "Northing", "Depth", "Alt", "Speed", "Age"])
         self.tgt_table.verticalHeader().setVisible(False)
         self.tgt_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.tgt_table.horizontalHeader().setSectionResizeMode(
@@ -452,7 +473,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item = QtWidgets.QTableWidgetItem(nm)
             item.setForeground(QtGui.QColor(DEFAULT_TARGETS[nm]["color"]))
             self.tgt_table.setItem(r, 0, item)
-            for c in range(1, 6):
+            for c in range(1, 7):
                 cell = QtWidgets.QTableWidgetItem("--")
                 cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self.tgt_table.setItem(r, c, cell)
@@ -799,27 +820,36 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def toggle_feed(self, on):
         if not on:
-            if self.feed is not None:
-                self.feed.stop()
-                self.feed.wait(2000)
-                self.feed = None
+            for attr in ("feed", "dfeed"):
+                f = getattr(self, attr, None)
+                if f is not None:
+                    f.stop()
+                    f.wait(2000)
+                    setattr(self, attr, None)
             self.listen_b.setText("Start listening")
             self.feed_status.setText("Stopped")
+            self.port_s.setEnabled(True)
+            self.dport_s.setEnabled(True)
             return
         if self.view.surface is None:
             QtWidgets.QMessageBox.information(
                 self, "Load a grid first",
-                "Open a bathymetry grid before starting the feed - target depth "
-                "is read from the terrain.")
+                "Open a bathymetry grid before starting the feed - positions "
+                "are placed on the terrain.")
             self.listen_b.setChecked(False)
             return
+        self._framed_feed = False
         self.feed = PositionFeed(self.port_s.value())
         self.feed.status.connect(self._feed_status)
         self.feed.fix.connect(self._on_fix)
-        self._framed_feed = False
         self.feed.start()
+        self.dfeed = DepthFeed(self.dport_s.value())
+        self.dfeed.status.connect(self._feed_status)
+        self.dfeed.fix.connect(self._on_fix)
+        self.dfeed.start()
         self.listen_b.setText("Stop listening")
         self.port_s.setEnabled(False)
+        self.dport_s.setEnabled(False)
 
     def zoom_to_targets(self):
         if not self.view.zoom_to_targets():
@@ -834,24 +864,70 @@ class MainWindow(QtWidgets.QMainWindow):
             self.port_s.setEnabled(True)
 
     def _on_fix(self, fx):
-        """A decoded fix, on the GUI thread. Depth comes from the terrain."""
+        """A decoded record, on the GUI thread.
+
+        Positions and depths arrive on separate ports at their own rate and
+        carry no timestamps, so there is no honest way to time-align them.
+        Each vehicle keeps its latest of each, and the scene is rebuilt from
+        whichever has just changed.
+        """
+        if isinstance(fx, DepthFix):
+            now = time.monotonic()
+            for name, metres in fx.depths.items():
+                self._depths[name] = (float(metres), now)
+            self._last_depth = now
+            self._place_targets()
+            return
+
         s = self.view.surface
         if s is None:
             return
         self._last_fix = time.monotonic()
+        self._positions = dict(fx.pos)
+        self._place_targets()
+        self.fix_time.setText(
+            f"{self.feed.records if self.feed else 0} position records / "
+            f"{self.dfeed.records if self.dfeed else 0} depth records")
+
+    def _place_targets(self):
+        """Put every vehicle where its position and depth say it is."""
+        s = self.view.surface
+        if s is None or not self._positions:
+            return
+        now = time.monotonic()
         for r, nm in enumerate(ORDER):
-            en = fx.pos.get(nm)
+            en = self._positions.get(nm)
             if en is None:
                 continue
             e, n = en
             p = s.probe(e, n)
+            seabed = None if p is None else -p.z
             surface_vessel = nm == "Vessel" and self.surf_b.isChecked()
-            if p is None and not surface_vessel:
+
+            depth, age = self._depths.get(nm, (None, 0.0))
+            fresh = depth is not None and (now - age) < DEPTH_STALE_AFTER
+            if nm == "Vessel":
+                # No depth is sent for the vessel; it is at the surface or,
+                # by preference, drawn on the bottom beneath itself.
+                z = 0.0 if surface_vessel else (None if p is None else p.z)
+                shown, alt = (0.0 if surface_vessel else seabed), None
+            elif fresh:
+                z, shown = -depth, depth
+                alt = None if seabed is None else seabed - depth
+            else:
+                # Depth missing or stale: rest it on the seabed rather than
+                # leave it hanging at a frozen depth.
+                z, shown, alt = (None if p is None else p.z), seabed, None
+
+            if z is None:
                 self._set_row(r, e, n, None, "off grid")
                 continue
-            z = 0.0 if surface_vessel else p.z
             tgt = self.view.targets.update(nm, e, n, z)
-            self._set_row(r, e, n, None if p is None else -p.z, "0 s", tgt.speed)
+            if not fresh and nm in DEPTH_ORDER:
+                self.view.targets.mark_stale(nm)
+            self._set_row(r, e, n, shown, "0 s", tgt.speed, alt)
+
+        self.view.targets.draw_tethers(TETHERS)
         if self._framed_feed is False:
             # At full extent a pixel is ~90 m of seabed, so a vehicle moving at
             # 0.6 m/s looks frozen. Frame them once when the first fix lands.
@@ -859,20 +935,29 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.follow_b.isChecked():
             self.view.follow_targets()
         self.view.plotter.render()
-        self.fix_time.setText(
-            f"Fix {fx.t:%H:%M:%S}Z  •  {self.feed.records if self.feed else 0} records"
-            f" / {self.feed.packets if self.feed else 0} packets")
-        if self.feed:
-            self.feed_stats.setText(
-                f"{self.feed.packets} pkt  {self.feed.records} rec  {self.feed.bad} bad")
 
-    def _set_row(self, r, e, n, depth, age, speed=None):
+    def _set_row(self, r, e, n, depth, age, speed=None, alt=None):
         self.tgt_table.item(r, 1).setText(f"{e:,.2f}")
         self.tgt_table.item(r, 2).setText(f"{n:,.2f}")
         self.tgt_table.item(r, 3).setText("--" if depth is None else f"{depth:,.1f}")
-        self.tgt_table.item(r, 4).setText(
+        cell = self.tgt_table.item(r, 4)
+        if alt is None or not math.isfinite(alt):
+            cell.setText("--")
+            cell.setForeground(QtGui.QColor("#e3eef1"))
+        else:
+            cell.setText(f"{alt:,.1f}")
+            # Below the seabed is not a flying ROV, it is a datum or sign
+            # mismatch between the depth feed and the grid. Say so in red
+            # rather than draw the vehicle silently buried.
+            cell.setForeground(QtGui.QColor("#e8663d" if alt < 0 else "#e3eef1"))
+        self.tgt_table.item(r, 5).setText(
             "--" if speed is None or not math.isfinite(speed) else f"{speed:.2f} m/s")
-        self.tgt_table.item(r, 5).setText(age)
+        self.tgt_table.item(r, 6).setText(age)
+
+    def _tms_toggled(self, on):
+        self.view.targets.set_tms_visible(on)
+        self.view.targets.draw_tethers(TETHERS)
+        self.view.plotter.render()
 
     def _check_stale(self):
         if self.feed is None:
@@ -882,7 +967,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         age = time.monotonic() - self._last_fix
         for r in range(len(ORDER)):
-            self.tgt_table.item(r, 5).setText(f"{age:.0f} s")
+            self.tgt_table.item(r, 6).setText(f"{age:.0f} s")
         if age > STALE_AFTER:
             for nm in ORDER:
                 self.view.targets.mark_stale(nm)
@@ -897,8 +982,10 @@ class MainWindow(QtWidgets.QMainWindow):
         read. They need different answers, so they need different messages.
         """
         f = self.feed
+        d = self.dfeed
         self.feed_stats.setText(
-            f"{f.packets} pkt   {f.records} rec   {f.bad} unreadable")
+            f"pos {f.packets} pkt / {f.records} rec"
+            + (f"   depth {d.packets} pkt / {d.records} rec" if d else ""))
         if f.packets == 0:
             waited = time.monotonic() - f.started_at if f.started_at else 0.0
             self.feed_status.setText(
@@ -915,7 +1002,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.feed_status.setText(
                     f"{f.packets} datagrams from {f.last_addr}, holding "
                     f"{f.carry_len} bytes, no complete record yet.\n"
-                    f"{explain(f.last_pending)}")
+                    f"{explain(f.last_pending, f.fields)}")
             else:
                 self.feed_status.setText(
                     f"{f.packets} datagrams from {f.last_addr}, none decoded.\n"
@@ -982,6 +1069,8 @@ class MainWindow(QtWidgets.QMainWindow):
             prefs.set_view("view/lock_z", self.view.lock_z)
             prefs.set_view("view/trail", self.trail_c.currentText())
             prefs.set_view("feed/port", self.port_s.value())
+            prefs.set_view("feed/depth_port", self.dport_s.value())
+            prefs.set_view("view/show_tms", self.tms_b.isChecked())
             self._save_overlay_list()
         except Exception:
             pass
@@ -993,6 +1082,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.az_s, prefs.view("view/sun_az")),
             (self.al_s, prefs.view("view/sun_alt")),
             (self.port_s, prefs.view("feed/port")),
+            (self.dport_s, prefs.view("feed/depth_port")),
         ):
             widget.blockSignals(True)
             widget.setValue(value)
@@ -1023,6 +1113,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ve_l.setText(f"{prefs.view('view/ve'):.1f}\u00d7")
         self.az_l.setText(f"{prefs.view('view/sun_az')}\u00b0")
         self.al_l.setText(f"{prefs.view('view/sun_alt')}\u00b0")
+        self.tms_b.blockSignals(True)
+        self.tms_b.setChecked(bool(prefs.view("view/show_tms")))
+        self.tms_b.blockSignals(False)
+        self.view.targets.tms_visible = bool(prefs.view("view/show_tms"))
         self.lockz_b.blockSignals(True)
         self.lockz_b.setChecked(bool(prefs.view("view/lock_z")))
         self.lockz_b.blockSignals(False)
@@ -1048,8 +1142,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_prefs()
         if self._demo:
             self._demo.stop()
-        if self.feed is not None:
-            self.feed.stop()
-            self.feed.wait(2000)
+        for attr in ("feed", "dfeed"):
+            f = getattr(self, attr, None)
+            if f is not None:
+                f.stop()
+                f.wait(2000)
         self.view.close()
         super().closeEvent(e)

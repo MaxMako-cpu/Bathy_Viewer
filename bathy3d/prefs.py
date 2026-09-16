@@ -136,6 +136,8 @@ VIEW = {
     "view/lock_z": (True, bool),
     "view/trail": ("10 minutes", str),
     "feed/port": (6451, int),
+    "feed/depth_port": (6452, int),
+    "view/show_tms": (True, bool),
 }
 
 
