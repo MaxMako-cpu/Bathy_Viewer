@@ -16,8 +16,16 @@ ORG = "Bathy3D"
 APP = "Bathy3D"
 
 
+#: Set BATHY3D_PROFILE to keep a run's settings apart from the everyday ones.
+#: The test suites use it so they neither read nor overwrite real preferences -
+#: without it one test leaves an exaggeration behind and the next one fails on
+#: it, and a test run quietly rewrites what the user had set.
+PROFILE_ENV = "BATHY3D_PROFILE"
+
+
 def settings() -> QtCore.QSettings:
-    return QtCore.QSettings(ORG, APP)
+    profile = os.environ.get(PROFILE_ENV, "").strip()
+    return QtCore.QSettings(ORG, f"{APP}-{profile}" if profile else APP)
 
 
 def _get(key, default=None, cast=None):
@@ -49,16 +57,36 @@ def set_last_grid(path: str) -> None:
     set_value("files/grid", path)
 
 
+#: Stored as "#rrggbb|path". Neither a colour nor a Windows path can contain
+#: the separator, so splitting once from the left is safe.
+_SEP = "|"
+
+
 def overlays() -> list:
-    """Shapefiles that were open last time, minus any that have since gone."""
+    """(path, colour) for each shapefile open last time, minus any now gone.
+
+    Entries written before colours were stored are plain paths; those come back
+    with no colour and the caller picks one.
+    """
     v = settings().value("files/overlays", [])
     if isinstance(v, str):
         v = [v]
-    return [p for p in (v or []) if p and os.path.exists(p)]
+    out = []
+    for item in v or []:
+        if not item:
+            continue
+        colour, text = None, str(item)
+        if text.startswith("#") and _SEP in text:
+            colour, text = text.split(_SEP, 1)
+        if os.path.exists(text):
+            out.append((text, colour))
+    return out
 
 
-def set_overlays(paths) -> None:
-    set_value("files/overlays", list(paths))
+def set_overlays(entries) -> None:
+    """``entries`` is an iterable of (path, colour)."""
+    set_value("files/overlays",
+              [f"{c}{_SEP}{p}" if c else str(p) for p, c in entries])
 
 
 def last_dir(kind: str) -> str:
@@ -101,6 +129,7 @@ VIEW = {
     "view/sun_az": (315, int),
     "view/sun_alt": (40, int),
     "view/ramp": ("Bathy", str),
+    "view/ramp_slope": ("Green to red", str),
     "view/color_by": ("Depth", str),
     "view/detail": ("Medium (1.5 M cells)", str),
     "view/left_action": ("rotate", str),

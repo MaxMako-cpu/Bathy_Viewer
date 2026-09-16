@@ -22,9 +22,7 @@ def check(n,c,d=""):
     if not c: FAILED.append(n)
 
 # isolate from any real saved settings
-QtCore.QCoreApplication.setOrganizationName("Bathy3D-Test")
-QtCore.QCoreApplication.setApplicationName("Bathy3D-Test")
-prefs.ORG = prefs.APP = "Bathy3D-Test"
+os.environ["BATHY3D_PROFILE"] = "test-prefs"
 prefs.settings().clear()
 
 app = QtWidgets.QApplication(sys.argv[:1])
@@ -53,7 +51,8 @@ pump(300)
 w1.close(); pump(300)
 
 check("grid remembered", prefs.last_grid() == GRID, str(prefs.last_grid()))
-check("overlay remembered", prefs.overlays() == [SHP], str(prefs.overlays()))
+check("overlay remembered", [p for p, _c in prefs.overlays()] == [SHP],
+      str(prefs.overlays()))
 check("grid folder remembered", prefs.last_dir("grid") == os.path.dirname(GRID),
       prefs.last_dir("grid"))
 check("shapefile folder remembered", prefs.last_dir("shp") == APP, prefs.last_dir("shp"))
@@ -92,7 +91,7 @@ w3.close(); pump(200)
 
 # a vanished file must not break startup
 prefs.set_last_grid(r"C:\nope\missing.tif")
-prefs.set_overlays([r"C:\nope\gone.shp"])
+prefs.set_overlays([(r"C:\nope\gone.shp", "#ffffff")])
 check("missing grid is ignored", prefs.last_grid() is None)
 check("missing overlay is ignored", prefs.overlays() == [])
 prefs.settings().clear()

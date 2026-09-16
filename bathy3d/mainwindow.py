@@ -14,7 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import raster
 from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
 from .measure import compass
-from .ramps import DEPTH_RAMPS
+from . import ramps
 from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
 from . import prefs, vectors
 from .viewer import TerrainView
@@ -132,6 +132,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.feed = None
         self._last_fix = None
         self._framed_feed = None
+        self._ramp_choice = {}
         self._build_controls()
         self._build_readout()
         self._build_menu()
@@ -191,10 +192,10 @@ class MainWindow(QtWidgets.QMainWindow):
         sl = QtWidgets.QFormLayout(surf)
         self.by_c = QtWidgets.QComboBox()
         self.by_c.addItems(["Depth", "Slope"])
-        self.by_c.currentTextChanged.connect(self.view.set_color_by)
+        self.by_c.currentTextChanged.connect(self._color_by_changed)
         self.ramp_c = QtWidgets.QComboBox()
-        self.ramp_c.addItems(list(DEPTH_RAMPS))
-        self.ramp_c.currentTextChanged.connect(self.view.set_ramp)
+        self.ramp_c.addItems(list(ramps.DEPTH_RAMPS))
+        self.ramp_c.currentTextChanged.connect(self._ramp_changed)
         self.detail_c = QtWidgets.QComboBox()
         self.detail_c.addItems(list(DETAIL))
         self.detail_c.setCurrentText("Medium (1.5 M cells)")
@@ -243,18 +244,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ov_list = QtWidgets.QListWidget()
         self.ov_list.setMaximumHeight(96)
         self.ov_list.itemChanged.connect(self._overlay_toggled)
+        self.ov_list.itemDoubleClicked.connect(self.pick_overlay_colour)
         ol.addWidget(self.ov_list)
         orow = QtWidgets.QWidget()
         oh = QtWidgets.QHBoxLayout(orow)
         oh.setContentsMargins(0, 0, 0, 0)
         add_b = QtWidgets.QPushButton("Add shapefile…")
         add_b.clicked.connect(self.add_overlay_dialog)
+        col_b = QtWidgets.QPushButton("Colour…")
+        col_b.clicked.connect(self.pick_overlay_colour)
         rm_b = QtWidgets.QPushButton("Remove")
         rm_b.clicked.connect(self.remove_overlay)
         oh.addWidget(add_b, 1)
+        oh.addWidget(col_b)
         oh.addWidget(rm_b)
         ol.addWidget(orow)
-        self.ov_hint = QtWidgets.QLabel("Points, lines and polygons, draped on the seabed.")
+        self.ov_hint = QtWidgets.QLabel(
+            "Points, lines and polygons, draped on the seabed.\n"
+            "Double-click a layer to recolour it.")
         self.ov_hint.setObjectName("hint")
         self.ov_hint.setWordWrap(True)
         ol.addWidget(self.ov_hint)
@@ -563,13 +570,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_measure()
         if self._restore_overlays:
             wanted, self._restore_overlays = self._restore_overlays, None
-            for p in wanted:
-                self.add_overlay_path(p, remember=False)
+            for p, colour in wanted:
+                self.add_overlay_path(p, remember=False, color=colour)
 
     def _load_failed(self, msg):
         self.prog.close()
         QtWidgets.QMessageBox.critical(self, "Could not open grid", msg)
         self.statusBar().showMessage("Open failed")
+
+    def _color_by_changed(self, what):
+        """Depth and slope get their own ramp menus, and their own last choice."""
+        self._ramp_choice[self.view.color_by] = self.ramp_c.currentText()
+        names = list(ramps.ramps_for(what))
+        chosen = self._ramp_choice.get(what) or ramps.default_ramp(what)
+        if chosen not in names:
+            chosen = names[0]
+        self.ramp_c.blockSignals(True)
+        self.ramp_c.clear()
+        self.ramp_c.addItems(names)
+        self.ramp_c.setCurrentText(chosen)
+        self.ramp_c.blockSignals(False)
+        self._ramp_choice[what] = chosen
+        self.view.set_surface_colours(what, chosen)
+
+    def _ramp_changed(self, name):
+        if not name:
+            return
+        self._ramp_choice[self.view.color_by] = name
+        self.view.set_ramp(name)
 
     def _reload_for_detail(self, _):
         if self._path:
@@ -664,13 +692,14 @@ class MainWindow(QtWidgets.QMainWindow):
             prefs.set_last_dir("shp", path)
             self.add_overlay_path(path)
 
-    def add_overlay_path(self, path, remember=True):
+    def add_overlay_path(self, path, remember=True, color=None):
         if self.view.surface is None:
             QtWidgets.QMessageBox.information(
                 self, "Load a grid first",
                 "Overlays are draped on the terrain, so a grid has to be open.")
             return
-        colour = vectors.PALETTE[len(self.view.overlays) % len(vectors.PALETTE)]
+        colour = color or vectors.PALETTE[
+            len(self.view.overlays) % len(vectors.PALETTE)]
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             layer = vectors.load(path, self.view.surface, color=colour)
@@ -718,6 +747,24 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.statusBar().showMessage("Trails off", 4000)
 
+    def pick_overlay_colour(self, item=None):
+        """Recolour one overlay. Reached from the button or a double-click."""
+        if not isinstance(item, QtWidgets.QListWidgetItem):
+            item = self.ov_list.currentItem()
+        if item is None:
+            self.statusBar().showMessage("Select an overlay first", 4000)
+            return
+        layer = self.view.overlays.get(item.text())
+        if layer is None:
+            return
+        chosen = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(layer.color), self, f"Colour for {layer.name}")
+        if not chosen.isValid():
+            return
+        item.setForeground(chosen)
+        self.view.set_overlay_colour(layer.name, chosen.name())
+        self._save_overlay_list()
+
     def _overlay_toggled(self, item):
         self.view.set_overlay_visible(item.text(),
                                       item.checkState() == QtCore.Qt.Checked)
@@ -731,11 +778,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_overlay_list()
 
     def _save_overlay_list(self):
-        prefs.set_overlays([
-            self.view.overlays[self.ov_list.item(i).text()].path
-            for i in range(self.ov_list.count())
-            if self.ov_list.item(i).text() in self.view.overlays
-        ])
+        entries = []
+        for i in range(self.ov_list.count()):
+            layer = self.view.overlays.get(self.ov_list.item(i).text())
+            if layer is not None:
+                entries.append((layer.path, layer.color))
+        prefs.set_overlays(entries)
 
     # --------------------------------------------------------- position feed
 
@@ -914,7 +962,10 @@ class MainWindow(QtWidgets.QMainWindow):
             prefs.set_view("view/ve", self.ve_s.value() / 10.0)
             prefs.set_view("view/sun_az", self.az_s.value())
             prefs.set_view("view/sun_alt", self.al_s.value())
-            prefs.set_view("view/ramp", self.ramp_c.currentText())
+            self._ramp_choice[self.view.color_by] = self.ramp_c.currentText()
+            prefs.set_view("view/ramp", self._ramp_choice.get("Depth", "Bathy"))
+            prefs.set_view("view/ramp_slope",
+                           self._ramp_choice.get("Slope", "Green to red"))
             prefs.set_view("view/color_by", self.by_c.currentText())
             prefs.set_view("view/detail", self.detail_c.currentText())
             prefs.set_view("view/left_action", self.view.left_action)
@@ -936,8 +987,20 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.blockSignals(True)
             widget.setValue(value)
             widget.blockSignals(False)
+        self._ramp_choice = {"Depth": prefs.view("view/ramp"),
+                             "Slope": prefs.view("view/ramp_slope")}
+        mode = prefs.view("view/color_by")
+        names = list(ramps.ramps_for(mode))
+        chosen = self._ramp_choice.get(mode) or ramps.default_ramp(mode)
+        if chosen not in names:
+            chosen = names[0]
+        self.ramp_c.blockSignals(True)
+        self.ramp_c.clear()
+        self.ramp_c.addItems(names)
+        self.ramp_c.setCurrentText(chosen)
+        self.ramp_c.blockSignals(False)
+        self._ramp_choice[mode] = chosen
         for combo, value in (
-            (self.ramp_c, prefs.view("view/ramp")),
             (self.by_c, prefs.view("view/color_by")),
             (self.detail_c, prefs.view("view/detail")),
             (self.trail_c, prefs.view("view/trail")),
@@ -957,7 +1020,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.ve = prefs.view("view/ve")
         self.view.sun_az = prefs.view("view/sun_az")
         self.view.sun_alt = prefs.view("view/sun_alt")
-        self.view.ramp_name = prefs.view("view/ramp")
+        self.view.ramp_name = chosen
         self.view.color_by = prefs.view("view/color_by")
         self.view.lock_z = bool(prefs.view("view/lock_z"))
         self.view.set_left_action(prefs.view("view/left_action"))

@@ -9,6 +9,15 @@ terrain, toggles, follows vertical exaggeration, and removes cleanly.
 import os, sys, time
 APP = r"C:\Users\mkozh\OneDrive\Desktop\GoWork\bathy3d"
 sys.path.insert(0, APP)
+
+# Each suite gets its own settings profile, wiped on entry: the app now
+# remembers exaggeration, ramps and the rest, so without this one test
+# leaves state behind that the next one fails on - and a test run would
+# quietly overwrite real preferences.
+import os as _os
+_os.environ["BATHY3D_PROFILE"] = "test-overlay"
+from bathy3d import prefs as _prefs      # noqa: E402
+_prefs.settings().clear()
 GRID = r"C:\Users\mkozh\OneDrive\Desktop\bathy\BOEM_bathy_WGS84_UTM15N.tif"
 SHP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(APP, "EGN10_Preplot_SHP.shp")
 if len(sys.argv) > 2:

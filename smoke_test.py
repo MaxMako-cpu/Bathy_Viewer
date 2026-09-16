@@ -171,7 +171,7 @@ def main(path):
 
     pl = pv.Plotter(off_screen=True, window_size=(1280, 820))
     pl.set_background("#0d1418", top="#16232a")
-    act = pl.add_mesh(mesh, scalars="elev", cmap=ramps.depth_ramp("Bathy"),
+    act = pl.add_mesh(mesh, scalars="elev", cmap=ramps.ramp("Depth", "Bathy"),
                       smooth_shading=True, ambient=0.28, diffuse=0.9,
                       show_scalar_bar=True)
     act.SetScale(1.0, 1.0, 6.0)

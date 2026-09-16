@@ -18,6 +18,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Each suite gets its own settings profile, wiped on entry: the app now
+# remembers exaggeration, ramps and the rest, so without this one test
+# leaves state behind that the next one fails on - and a test run would
+# quietly overwrite real preferences.
+import os as _os
+_os.environ["BATHY3D_PROFILE"] = "test-feed"
+from bathy3d import prefs as _prefs      # noqa: E402
+_prefs.settings().clear()
+
 DEFAULT = r"C:\Users\mkozh\OneDrive\Desktop\bathy\BOEM_bathy_WGS84_UTM15N.tif"
 PORT = 6471  # not 6451, so this never fights a real feed on the same machine
 

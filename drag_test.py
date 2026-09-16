@@ -10,6 +10,15 @@ and a click with no drag still drops a measuring station.
 """
 import math, sys, time
 sys.path.insert(0, r"C:\Users\mkozh\OneDrive\Desktop\GoWork\bathy3d")
+
+# Each suite gets its own settings profile, wiped on entry: the app now
+# remembers exaggeration, ramps and the rest, so without this one test
+# leaves state behind that the next one fails on - and a test run would
+# quietly overwrite real preferences.
+import os as _os
+_os.environ["BATHY3D_PROFILE"] = "test-drag"
+from bathy3d import prefs as _prefs      # noqa: E402
+_prefs.settings().clear()
 GRID = sys.argv[1] if len(sys.argv) > 1 else \
     r"C:\Users\mkozh\OneDrive\Desktop\bathy\BOEM_bathy_WGS84_UTM15N.tif"
 from PySide6 import QtCore, QtWidgets

@@ -68,6 +68,14 @@ Turn it off and you get normal orbiting. **Left drag** in the Pointer panel
 swaps the buttons over if you would rather move the map with the plain
 left-drag and rotate with shift.
 
+**Colour by** switches between depth and slope, and each keeps its own ramp
+menu and its own last choice, so flipping between them does not lose your
+setting. Depth offers Bathy, Rainbow, Turbo, Spectral, Ocean, Viridis, Terrain,
+Grey and Hillshade only; slope offers Green to red, Steep alert, Turbo, Heat,
+Yellow-orange-red, Viridis, Magma and Grey. The rainbow ramps band the range
+harder than viridis on purpose — small depth changes separate into visibly
+different colours, which is what a survey eye is usually looking for.
+
 The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing,
 CRS easting/northing, latitude/longitude, and the source pixel. The **Measured
 line** table lists each leg's horizontal distance, depth change, gradient and
@@ -113,6 +121,7 @@ overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 trail_test.py     trail checks: age trimming, 24 h volume, draw cost
 drag_test.py      camera checks: level rotation, Z lock, zoom depth, click
 prefs_test.py     restart checks: files, folders and settings remembered
+colour_test.py    colour checks: per-mode ramps, overlay colours, restart
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -138,14 +147,18 @@ next start opens empty; the remembered folders survive that. Passing a grid on
 the command line takes precedence over the remembered one.
 
 Settings live in QSettings — the registry on Windows — so there is no file to
-mislay.
+mislay. Setting `BATHY3D_PROFILE` puts a run in its own settings profile; every
+test suite does that and wipes it on entry, so tests neither read nor overwrite
+real preferences and cannot leave state behind for one another.
 
 ## Shapefile overlays
 
 **Overlays** panel: *Add shapefile…*, or drop a `.shp` onto the window. Points,
 lines and polygons are read, reprojected into the loaded grid's CRS, and hung on
 the terrain so a route or a boundary follows the relief instead of floating
-through it. Tick to show or hide, select and *Remove* to drop one.
+through it. Tick to show or hide, select and *Remove* to drop one. Each layer gets its own
+colour: double-click it in the list, or select it and press *Colour…*. The
+choice is remembered with the file.
 
 Two details that decide whether an overlay is right or merely present:
 

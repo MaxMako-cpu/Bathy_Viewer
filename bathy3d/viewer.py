@@ -143,12 +143,11 @@ class TerrainView(QtWidgets.QWidget):
         if self._mesh is None:
             return
         if self.color_by == "Slope":
-            scalars, clim, cmap, title = "slope", self._clim_slope, ramps.SLOPE_RAMP, "Slope (deg)"
+            scalars, clim, title = "slope", self._clim_slope, "Slope (deg)"
         else:
-            scalars, clim = "elev", self._clim_depth
-            cmap = ramps.depth_ramp(self.ramp_name)
-            title = "Elevation (m)"
-        flat = self.ramp_name == "Hillshade only" and self.color_by == "Depth"
+            scalars, clim, title = "elev", self._clim_depth, "Elevation (m)"
+        cmap = ramps.ramp(self.color_by, self.ramp_name)
+        flat = self.ramp_name == ramps.FLAT_RAMP and self.color_by == "Depth"
         kwargs = dict(
             scalars=scalars,
             clim=clim,
@@ -214,6 +213,12 @@ class TerrainView(QtWidgets.QWidget):
 
     def set_ramp(self, name: str) -> None:
         self.ramp_name = name
+        self._rebuild_terrain()
+
+    def set_surface_colours(self, color_by: str, ramp_name: str) -> None:
+        """Change what is coloured and which ramp at once - one rebuild, not two."""
+        self.color_by = color_by
+        self.ramp_name = ramp_name
         self._rebuild_terrain()
 
     def set_color_by(self, what: str) -> None:
@@ -628,6 +633,14 @@ class TerrainView(QtWidgets.QWidget):
         self.overlays.pop(name, None)
         for nm in (f"ov:{name}", f"ovl:{name}"):
             self.plotter.remove_actor(nm, render=False)
+        self.plotter.render()
+
+    def set_overlay_colour(self, name: str, colour: str) -> None:
+        layer = self.overlays.get(name)
+        if layer is None:
+            return
+        layer.color = colour
+        self._draw_overlay(layer)
         self.plotter.render()
 
     def set_overlay_visible(self, name: str, on: bool) -> None:
