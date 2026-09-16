@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -29,6 +30,18 @@ DEFAULT_TARGETS = {
 #: enough that a short trail emerges from under the marker rather than hiding
 #: beneath it.
 BASE_POINT_PX = 12.0
+
+#: How much track to keep, in seconds. Selectable in the UI up to 24 hours.
+DEFAULT_TRAIL_SECONDS = 600.0
+
+#: Vertices actually drawn per trail. A 24-hour track at 1 Hz is 86 400
+#: points, and rebuilding that polyline for three targets every second costs
+#: real frame time for detail no one can see - so the drawn line is
+#: subsampled while the full history is kept.
+TRAIL_DRAW_MAX = 4000
+
+#: Hard ceiling on retained points, in case a feed runs far faster than 1 Hz.
+MAX_TRAIL_POINTS = 400_000
 
 
 def draw_on_top(actor) -> None:
@@ -59,7 +72,9 @@ class Target:
     z: float = float("nan")  # elevation, metres, positive up
     heading: float = float("nan")  # degrees from grid north
     stale: bool = True
-    trail: list = field(default_factory=list)  # local-metre points
+    #: (local x, local y, elevation, monotonic time) - the clock is what
+    #: lets the trail be trimmed by age rather than by point count.
+    trail: deque = field(default_factory=lambda: deque(maxlen=MAX_TRAIL_POINTS))
     speed: float = float("nan")   # metres per second over the ground
     updated_at: float = 0.0       # monotonic clock of the last fix
 
@@ -71,10 +86,11 @@ class Target:
 class TargetLayer:
     """Marker + label + trail actors for a handful of moving bodies."""
 
-    def __init__(self, plotter, surface=None, trail_len: int = 600):
+    def __init__(self, plotter, surface=None,
+                 trail_seconds: float = DEFAULT_TRAIL_SECONDS):
         self.plotter = plotter
         self.surface = surface
-        self.trail_len = trail_len
+        self.trail_seconds = float(trail_seconds)
         self.targets: dict[str, Target] = {}
         self._actors: dict[str, dict] = {}
         self._scale = 1.0  # metres per glyph unit, from the raster extent
@@ -130,13 +146,33 @@ class TargetLayer:
         t.updated_at = now
         t.x, t.y, t.z, t.heading = float(x), float(y), float(z), float(heading)
         t.stale = False
-        if t.fix and self.surface is not None:
+        if t.fix and self.surface is not None and self.trail_seconds > 0:
             lx, ly = self.surface.local_from_crs(t.x, t.y)
-            t.trail.append((lx, ly, t.z))
-            if len(t.trail) > self.trail_len:
-                del t.trail[: len(t.trail) - self.trail_len]
+            t.trail.append((lx, ly, t.z, now))
+            self._trim(t, now)
+        elif self.trail_seconds <= 0 and t.trail:
+            t.trail.clear()
         self._place(t)
         return t
+
+    def _trim(self, t: Target, now: float) -> None:
+        cutoff = now - self.trail_seconds
+        while t.trail and t.trail[0][3] < cutoff:
+            t.trail.popleft()
+
+    def set_trail_seconds(self, seconds: float) -> None:
+        """Change how much track is kept. Shortening trims immediately."""
+        self.trail_seconds = max(0.0, float(seconds))
+        now = time.monotonic()
+        for t in self.targets.values():
+            if self.trail_seconds <= 0:
+                t.trail.clear()
+            else:
+                self._trim(t, now)
+            bag = self._actors.get(t.name)
+            if bag and "trail" in bag and len(t.trail) < 2:
+                self.plotter.remove_actor(bag.pop("trail"), render=False)
+            self._place(t)
 
     def mark_stale(self, name: str) -> None:
         if name in self.targets:
@@ -233,7 +269,15 @@ class TargetLayer:
             self.plotter.remove_actor(bag.pop("stem"), render=False)
 
         if len(t.trail) > 1:
-            pts = np.asarray(t.trail, dtype=float).copy()
+            pts = np.asarray(t.trail, dtype=float)[:, :3].copy()
+            if len(pts) > TRAIL_DRAW_MAX:
+                # Subsample for drawing, always keeping the newest point so the
+                # line still reaches the marker.
+                step = int(np.ceil(len(pts) / TRAIL_DRAW_MAX))
+                keep = np.arange(0, len(pts), step)
+                if keep[-1] != len(pts) - 1:
+                    keep = np.append(keep, len(pts) - 1)
+                pts = pts[keep]
             pts[:, 2] *= self._ve
             bag["trail"] = self.plotter.add_mesh(
                 pv.lines_from_points(pts), color=t.color, line_width=2, opacity=0.9,

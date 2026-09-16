@@ -83,6 +83,7 @@ run.py            launcher
 smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
 overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
+trail_test.py     trail checks: age trimming, 24 h volume, draw cost
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -158,6 +159,14 @@ Markers, trails and drop lines are drawn over the terrain rather than
 depth-tested against it. A target sits at exactly the depth of the seabed
 under it, so any ridge between it and the camera would otherwise hide it — and
 a tracking mark you cannot see is worse than useless.
+
+**Trail** sets how much track is kept, from *Off* up to *24 hours*. Trails are
+trimmed by age, not by point count, so the selected duration is what you get
+whatever rate the feed runs at. A 24-hour trail at 1 Hz is 86 400 points per
+vehicle; the full history is retained but the drawn line is subsampled to
+4 000 vertices, which keeps the per-fix redraw around 25 ms instead of
+climbing all day. The newest point is always kept, so the line still reaches
+the marker. *Clear trails* empties them without changing the setting.
 
 The **Live positions** table shows each vehicle's easting, northing, the seabed
 depth under it, its speed over the ground, and the age of the last fix. The

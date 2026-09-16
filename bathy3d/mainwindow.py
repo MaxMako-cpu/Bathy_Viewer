@@ -15,7 +15,7 @@ from . import raster
 from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
 from .measure import compass
 from .ramps import DEPTH_RAMPS
-from .targets import DEFAULT_TARGETS
+from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
 from . import vectors
 from .viewer import TerrainView
 
@@ -23,6 +23,20 @@ OPEN_FILTER = (
     "Raster grids (*.tif *.tiff *.vrt *.img *.bag *.asc *.grd *.nc);;All files (*)"
 )
 SHP_FILTER = "Shapefiles (*.shp);;All files (*)"
+
+#: Trail retention offered in the UI, in seconds. 0 turns trails off.
+TRAILS = {
+    "Off": 0,
+    "1 minute": 60,
+    "5 minutes": 300,
+    "10 minutes": 600,
+    "30 minutes": 1800,
+    "1 hour": 3600,
+    "3 hours": 10800,
+    "6 hours": 21600,
+    "12 hours": 43200,
+    "24 hours": 86400,
+}
 
 DETAIL = {
     "Low (0.4 M cells)": 400_000,
@@ -265,6 +279,17 @@ class MainWindow(QtWidgets.QMainWindow):
             "Keep the camera centred on the vehicles as they move, "
             "without changing zoom.")
         tl.addWidget(self.follow_b)
+        trow = QtWidgets.QWidget()
+        th = QtWidgets.QHBoxLayout(trow)
+        th.setContentsMargins(0, 0, 0, 0)
+        th.addWidget(self._key("Trail"))
+        self.trail_c = QtWidgets.QComboBox()
+        self.trail_c.addItems(list(TRAILS))
+        self.trail_c.setCurrentText(
+            next(k for k, v in TRAILS.items() if v == int(DEFAULT_TRAIL_SECONDS)))
+        self.trail_c.currentTextChanged.connect(self._trail_changed)
+        th.addWidget(self.trail_c, 1)
+        tl.addWidget(trow)
         trails = QtWidgets.QPushButton("Clear trails")
         trails.clicked.connect(lambda: (self.view.targets.clear_trail(),
                                         self.view.plotter.render()))
@@ -638,6 +663,16 @@ class MainWindow(QtWidgets.QMainWindow):
         note = "" if layer.dropped == 0 else f"  •  {layer.dropped:,} vertices off grid"
         self.statusBar().showMessage(
             f"Overlay {layer.name}: {layer.summary()}  •  {layer.crs_name}{note}", 8000)
+
+    def _trail_changed(self, text):
+        self.view.targets.set_trail_seconds(TRAILS.get(text, 600))
+        self.view.plotter.render()
+        secs = TRAILS.get(text, 600)
+        if secs:
+            self.statusBar().showMessage(
+                f"Trails keep the last {text.lower()} of track", 4000)
+        else:
+            self.statusBar().showMessage("Trails off", 4000)
 
     def _overlay_toggled(self, item):
         self.view.set_overlay_visible(item.text(),
