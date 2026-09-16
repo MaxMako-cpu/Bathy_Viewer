@@ -1,4 +1,5 @@
 PySide6>=6.7
+pyshp>=2.3
 pyvista>=0.44
 pyvistaqt>=0.11
 vtk>=9.3

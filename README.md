@@ -82,15 +82,44 @@ gdal_translate -of COG -co COMPRESS=DEFLATE -co PREDICTOR=3 -co BLOCKSIZE=512 ^
 run.py            launcher
 smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
+overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
   measure.py      stations, legs, totals, CSV  (no VTK)
   targets.py      vessel / ROV markers, trails, drop lines
   feed.py         UDP listener + record parser
+  vectors.py      shapefile reader; reproject, densify, drape
   ramps.py        colour ramps
   mainwindow.py   PySide6 window, panels, menus, loader thread
 ```
+
+## Shapefile overlays
+
+**Overlays** panel: *Add shapefile…*, or drop a `.shp` onto the window. Points,
+lines and polygons are read, reprojected into the loaded grid's CRS, and hung on
+the terrain so a route or a boundary follows the relief instead of floating
+through it. Tick to show or hide, select and *Remove* to drop one.
+
+Two details that decide whether an overlay is right or merely present:
+
+* **Long segments are densified before draping.** Two vertices 5 km apart are a
+  single straight segment, and draping only its ends would drive the line
+  through whatever ridge lies between. Segments are subdivided at roughly the
+  grid's own cell size first.
+* **The CRS comes from the `.prj` sidecar.** Reprojection is to the grid's CRS.
+  With no `.prj` the grid's own CRS is assumed and the panel says so - check the
+  overlay lands where you expect before trusting it.
+
+A shapefile is really three or four files. Geometry lives in the `.shp` alone,
+so a missing `.dbf` costs labels and a missing `.shx` costs a little speed, but
+neither stops the shapes loading. Labels are drawn for point layers when a
+`.dbf` is present and carries a `NAME`, `LABEL`, `ID`, `BLOCK` or `AREA` field.
+
+Vertices with no terrain under them are dropped and counted, so a file that
+overhangs the grid loads with the part that fits rather than failing. Overlays
+are cleared when a different grid is opened, since they were draped on the old
+one. Requires `pyshp`.
 
 ## Live positions over UDP
 
@@ -205,6 +234,7 @@ coordinates at the right seabed depth in the right colours.
 - Rotated / sheared rasters are rejected — reproject north-up first.
 - Band 1 only on multi-band files.
 - No contour overlay yet, and no depth-profile plot along the measured line.
+- Shapefile polygons are drawn as outlines, not filled.
 - The feed carries no depth or heading, so dot height is terrain-derived and
   the vessel marker has no orientation.
 - No auto-follow: the camera does not track the vehicles as they move.

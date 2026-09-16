@@ -16,11 +16,13 @@ from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
 from .measure import compass
 from .ramps import DEPTH_RAMPS
 from .targets import DEFAULT_TARGETS
+from . import vectors
 from .viewer import TerrainView
 
 OPEN_FILTER = (
     "Raster grids (*.tif *.tiff *.vrt *.img *.bag *.asc *.grd *.nc);;All files (*)"
 )
+SHP_FILTER = "Shapefiles (*.shp);;All files (*)"
 
 DETAIL = {
     "Low (0.4 M cells)": 400_000,
@@ -190,6 +192,28 @@ class MainWindow(QtWidgets.QMainWindow):
         hint.setWordWrap(True)
         ml.addWidget(hint)
         v.addWidget(meas)
+
+        ov = QtWidgets.QGroupBox("Overlays")
+        ol = QtWidgets.QVBoxLayout(ov)
+        self.ov_list = QtWidgets.QListWidget()
+        self.ov_list.setMaximumHeight(96)
+        self.ov_list.itemChanged.connect(self._overlay_toggled)
+        ol.addWidget(self.ov_list)
+        orow = QtWidgets.QWidget()
+        oh = QtWidgets.QHBoxLayout(orow)
+        oh.setContentsMargins(0, 0, 0, 0)
+        add_b = QtWidgets.QPushButton("Add shapefile…")
+        add_b.clicked.connect(self.add_overlay_dialog)
+        rm_b = QtWidgets.QPushButton("Remove")
+        rm_b.clicked.connect(self.remove_overlay)
+        oh.addWidget(add_b, 1)
+        oh.addWidget(rm_b)
+        ol.addWidget(orow)
+        self.ov_hint = QtWidgets.QLabel("Points, lines and polygons, draped on the seabed.")
+        self.ov_hint.setObjectName("hint")
+        self.ov_hint.setWordWrap(True)
+        ol.addWidget(self.ov_hint)
+        v.addWidget(ov)
 
         tg = QtWidgets.QGroupBox("Position feed")
         tl = QtWidgets.QVBoxLayout(tg)
@@ -388,6 +412,8 @@ class MainWindow(QtWidgets.QMainWindow):
         act = m.addAction("&Open grid…")
         act.setShortcut(QtGui.QKeySequence.Open)
         act.triggered.connect(self.open_dialog)
+        m.addAction("Add shapefile &overlay…").triggered.connect(
+            self.add_overlay_dialog)
         self.act_reload = m.addAction("&Reload")
         self.act_reload.triggered.connect(lambda: self.open_path(self._path) if self._path else None)
         m.addSeparator()
@@ -441,6 +467,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prog.close()
         self._path = surf.path
         self.view.set_surface(surf)
+        self.ov_list.clear()
         self.setWindowTitle(f"Bathy3D — {os.path.basename(surf.path)}")
 
         zv = surf.z_disp[~np.isnan(surf.z_disp)]
@@ -491,9 +518,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def dropEvent(self, e):
         for url in e.mimeData().urls():
             p = url.toLocalFile()
-            if p:
+            if not p:
+                continue
+            if p.lower().endswith(".shp"):
+                self.add_overlay_path(p)
+            else:
                 self.open_path(p)
-                break
+            break
 
     # ------------------------------------------------------------- readout
 
@@ -557,6 +588,67 @@ class MainWindow(QtWidgets.QMainWindow):
         if path:
             self.view.screenshot(path)
             self.statusBar().showMessage(f"Wrote {path}")
+
+    # ------------------------------------------------------------- overlays
+
+    def add_overlay_dialog(self):
+        start = os.path.dirname(self._path) if self._path else os.path.expanduser("~")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Add shapefile overlay", start, SHP_FILTER)
+        if path:
+            self.add_overlay_path(path)
+
+    def add_overlay_path(self, path):
+        if self.view.surface is None:
+            QtWidgets.QMessageBox.information(
+                self, "Load a grid first",
+                "Overlays are draped on the terrain, so a grid has to be open.")
+            return
+        colour = vectors.PALETTE[len(self.view.overlays) % len(vectors.PALETTE)]
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            layer = vectors.load(path, self.view.surface, color=colour)
+        except vectors.VectorError as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(self, "Could not add overlay", str(exc))
+            return
+        except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(
+                self, "Could not add overlay",
+                str(exc) + "\n\n" + traceback.format_exc(limit=3))
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+
+        self.view.remove_overlay(layer.name)
+        for i in range(self.ov_list.count()):
+            if self.ov_list.item(i).text() == layer.name:
+                self.ov_list.takeItem(i)
+                break
+        self.view.add_overlay(layer)
+        item = QtWidgets.QListWidgetItem(layer.name)
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(QtCore.Qt.Checked)
+        item.setForeground(QtGui.QColor(layer.color))
+        item.setToolTip("\n".join([layer.summary(),
+                                   f"CRS: {layer.crs_name}",
+                                   layer.path]))
+        self.ov_list.addItem(item)
+        self.ov_hint.setText(f"{layer.name}: {layer.summary()}")
+        note = "" if layer.dropped == 0 else f"  •  {layer.dropped:,} vertices off grid"
+        self.statusBar().showMessage(
+            f"Overlay {layer.name}: {layer.summary()}  •  {layer.crs_name}{note}", 8000)
+
+    def _overlay_toggled(self, item):
+        self.view.set_overlay_visible(item.text(),
+                                      item.checkState() == QtCore.Qt.Checked)
+
+    def remove_overlay(self):
+        item = self.ov_list.currentItem()
+        if item is None:
+            return
+        self.view.remove_overlay(item.text())
+        self.ov_list.takeItem(self.ov_list.row(item))
 
     # --------------------------------------------------------- position feed
 

@@ -23,6 +23,10 @@ MEASURE_COLOR = "#f0a93c"
 #: thing being tracked.
 STATION_POINT_PX = BASE_POINT_PX * 0.62
 
+#: Shapefile vertices are drawn smaller again - an overlay is context,
+#: and a preplot can run to thousands of points.
+OVERLAY_POINT_PX = 5.0
+
 
 class TerrainView(QtWidgets.QWidget):
     """Wraps a PyVista Qt interactor and everything drawn inside it."""
@@ -39,6 +43,7 @@ class TerrainView(QtWidgets.QWidget):
 
         self.surface = None
         self.line: MeasureLine | None = None
+        self.overlays: dict = {}
         self.targets = TargetLayer(self.plotter)
 
         self.ve = 6.0
@@ -65,6 +70,7 @@ class TerrainView(QtWidgets.QWidget):
     def set_surface(self, surface) -> None:
         self.surface = surface
         self.line = MeasureLine(surface)
+        self.overlays = {}      # draped on the previous terrain, so not reusable
         self.plotter.clear()
         self.plotter.add_axes(interactive=False)
         self.targets = TargetLayer(self.plotter)
@@ -159,6 +165,8 @@ class TerrainView(QtWidgets.QWidget):
         if self._terrain is not None:
             self._terrain.SetScale(1.0, 1.0, self.ve)
         self.targets.set_ve(self.ve)
+        for layer in self.overlays.values():
+            self._draw_overlay(layer)
         self._redraw_measure()
         self.plotter.renderer.ResetCameraClippingRange()
         self.plotter.render()
@@ -393,6 +401,71 @@ class TerrainView(QtWidgets.QWidget):
             always_visible=True, render=False,
         )
         self.plotter.render()
+
+    # -------------------------------------------------------------- overlays
+
+    def add_overlay(self, layer) -> None:
+        self.overlays[layer.name] = layer
+        self._draw_overlay(layer)
+        self.plotter.render()
+
+    def remove_overlay(self, name: str) -> None:
+        self.overlays.pop(name, None)
+        for nm in (f"ov:{name}", f"ovl:{name}"):
+            self.plotter.remove_actor(nm, render=False)
+        self.plotter.render()
+
+    def set_overlay_visible(self, name: str, on: bool) -> None:
+        layer = self.overlays.get(name)
+        if layer is None:
+            return
+        layer.visible = bool(on)
+        self._draw_overlay(layer)
+        self.plotter.render()
+
+    def clear_overlays(self) -> None:
+        for name in list(self.overlays):
+            self.remove_overlay(name)
+
+    def _draw_overlay(self, layer) -> None:
+        for nm in (f"ov:{layer.name}", f"ovl:{layer.name}"):
+            self.plotter.remove_actor(nm, render=False)
+        if not layer.visible or not layer.parts:
+            return
+        if layer.kind == "point":
+            pts = layer.parts[0].copy()
+            pts[:, 2] *= self.ve
+            actor = self.plotter.add_points(
+                pts, color=layer.color, point_size=OVERLAY_POINT_PX,
+                render_points_as_spheres=True, name=f"ov:{layer.name}",
+                render=False, pickable=False)
+        else:
+            # One PolyData with explicit line connectivity. pv.merge over
+            # thousands of separate parts is far slower for the same result.
+            scaled = []
+            cells = []
+            off = 0
+            for part in layer.parts:
+                p = part.copy()
+                p[:, 2] *= self.ve
+                scaled.append(p)
+                n = len(p)
+                cells.append(np.concatenate([[n], np.arange(off, off + n)]))
+                off += n
+            poly = pv.PolyData(np.vstack(scaled),
+                               lines=np.concatenate(cells).astype(np.int64))
+            actor = self.plotter.add_mesh(
+                poly, color=layer.color, line_width=2, name=f"ov:{layer.name}",
+                render=False, pickable=False)
+        draw_on_top(actor)
+        actor.SetVisibility(True)
+
+        if layer.labels:
+            lp = np.array([[a, b, c * self.ve] for a, b, c, _ in layer.labels], float)
+            self.plotter.add_point_labels(
+                lp, [t for *_, t in layer.labels], name=f"ovl:{layer.name}",
+                font_size=9, text_color=layer.color, shape=None,
+                show_points=False, always_visible=True, render=False)
 
     # ------------------------------------------------------------------ misc
 
