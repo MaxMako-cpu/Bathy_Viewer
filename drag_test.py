@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Checks for camera interaction.
 
-With Lock Z on, a left-drag tilts and nothing else: the compass heading and
-the distance to the target must not move. Shift-left slides the map without
-changing altitude, the wheel still zooms, and a click with no drag still
-drops a measuring station.
+With Lock Z on, a left-drag swings the map round at a fixed viewing angle:
+the heading turns while the tilt and the distance to the target stay put.
+Shift-left slides the map without changing altitude, the wheel still zooms,
+and a click with no drag still drops a measuring station.
 
     python drag_test.py [grid.tif]
 """
@@ -51,31 +51,35 @@ def go():
     win.meas_b.setChecked(False)
     print(f"  left_action={win.view.left_action} lock_z={win.view.lock_z}")
     check("left drag rotates by default", win.view.left_action=="rotate")
+    check("Z locked by default", win.view.lock_z is True)
 
-    # vertical drag -> tilt changes, heading does not
-    b0,t0,d0 = geom(cam)
-    drag(iren,int(w*.5),int(h*.5),int(w*.5),int(h*.5)+160); pump(120)
-    b1,t1,d1 = geom(cam)
-    print(f"  vertical drag: heading {b0:.2f}->{b1:.2f}  tilt {t0:.2f}->{t1:.2f}")
-    check("vertical drag tilts", abs(t1-t0) > 3, f"{abs(t1-t0):.2f} deg")
-    check("vertical drag keeps heading", abs(b1-b0) < 1e-6, f"{abs(b1-b0):.6f} deg")
-
-    # horizontal drag -> heading must NOT move with lock on
+    # horizontal drag -> map swings round, viewing angle kept
     b0,t0,d0 = geom(cam)
     drag(iren,int(w*.5),int(h*.5),int(w*.5)+240,int(h*.5)); pump(120)
     b1,t1,d1 = geom(cam)
     print(f"  horizontal drag: heading {b0:.2f}->{b1:.2f}  tilt {t0:.2f}->{t1:.2f}")
-    check("horizontal drag does not spin the compass", abs(b1-b0) < 1e-6,
-          f"{abs(b1-b0):.6f} deg")
+    check("horizontal drag swings the map round", abs(b1-b0) > 5,
+          f"{abs(b1-b0):.2f} deg")
+    check("horizontal drag keeps the viewing angle", abs(t1-t0) < 1e-6,
+          f"{abs(t1-t0):.6f} deg")
     check("distance to target unchanged", abs(d1-d0) < 1e-3, f"{abs(d1-d0):.4f} m")
 
-    # unlock -> compass spins again
+    # vertical drag -> must NOT tilt with the lock on
+    b0,t0,d0 = geom(cam)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5),int(h*.5)+160); pump(120)
+    b1,t1,d1 = geom(cam)
+    print(f"  vertical drag: heading {b0:.2f}->{b1:.2f}  tilt {t0:.2f}->{t1:.2f}")
+    check("vertical drag does not tilt", abs(t1-t0) < 1e-6, f"{abs(t1-t0):.6f} deg")
+    check("vertical drag keeps the distance", abs(d1-d0) < 1e-3, f"{abs(d1-d0):.4f} m")
+
+    # unlock -> tilting comes back
     win.lockz_b.setChecked(False); pump(80)
-    b0,_,_ = geom(cam)
-    drag(iren,int(w*.5),int(h*.5),int(w*.5)+240,int(h*.5)); pump(120)
-    b1,_,_ = geom(cam)
-    check("unlocking lets the compass spin", abs(b1-b0) > 5, f"{abs(b1-b0):.2f} deg")
+    _,t0,_ = geom(cam)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5),int(h*.5)+160); pump(120)
+    _,t1,_ = geom(cam)
+    check("unlocking lets it tilt again", abs(t1-t0) > 3, f"{abs(t1-t0):.2f} deg")
     win.lockz_b.setChecked(True); pump(80)
+    win.view.reset_view(); pump(150)
 
     # shift-left moves the map, height held
     p0 = tuple(cam.position); f0 = tuple(cam.focal_point)

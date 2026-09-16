@@ -212,8 +212,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lockz_b.setCheckable(True)
         self.lockz_b.setChecked(True)
         self.lockz_b.setToolTip(
-            "Rotating then tilts only - no compass spin - and moving the map "
-            "keeps your altitude instead of drifting.")
+            "Rotating then swings the map round at a fixed viewing angle, and "
+            "moving it keeps your altitude instead of drifting.")
         self.lockz_b.toggled.connect(lambda on: setattr(self.view, "lock_z", on))
         ml.addWidget(self.lockz_b)
         hint = QtWidgets.QLabel(

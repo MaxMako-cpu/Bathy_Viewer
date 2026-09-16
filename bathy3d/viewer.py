@@ -52,8 +52,8 @@ class TerrainView(QtWidgets.QWidget):
         self.ramp_name = "Bathy"
         self.color_by = "Depth"
         self.measuring = True
-        self.left_action = "rotate"  # left-drag tilts; shift-left slides the map
-        self.lock_z = True           # no compass spin, no height drift
+        self.left_action = "rotate"  # left-drag swings the map; shift-left slides it
+        self.lock_z = True           # spin level, and no height drift
 
         self._terrain = None  # pv actor
         self._mesh = None
@@ -64,7 +64,7 @@ class TerrainView(QtWidgets.QWidget):
         self._drag_button = None
         self._drag_mode = None
         self._drag_z = None
-        self._drag_bearing = None
+        self._drag_rot = None
         self._picker = vtkPropPicker()
 
         self.plotter.set_background("#0d1418", top="#16232a")
@@ -351,9 +351,9 @@ class TerrainView(QtWidgets.QWidget):
     def set_left_action(self, action: str) -> None:
         """What a left-drag does: rotate the view, or slide the map.
 
-        Rotate is the default, but with Lock Z on it is tilt only - the camera
-        arcs in the vertical plane and the compass heading never moves, which
-        is what makes it usable on a chart. Shift-left does the other one.
+        Rotate is the default, but with Lock Z on the camera stays on one
+        horizontal circle: the map swings round and the viewing angle you set
+        is kept. Shift-left does the other one.
         """
         self.left_action = "pan" if action == "pan" else "rotate"
         try:
@@ -371,11 +371,11 @@ class TerrainView(QtWidgets.QWidget):
     def _apply_z_lock(self):
         """Hold the Z axis still, whichever way the drag is moving the camera.
 
-        Rotating: VTK's trackball turns the compass as well as the tilt, so
-        dragging sideways spins the whole chart round. With the lock on, the
-        heading recorded at button-down is restored after every move, leaving
-        the tilt - the camera arcing in the vertical plane - as the only
-        rotation a left-drag produces.
+        Rotating: VTK's trackball changes the tilt as well as the heading, so
+        a drag tips the chart out of the viewing angle you set. With the lock
+        on, the camera's height above the target and its distance from it are
+        both held, so the camera stays on one horizontal circle and a drag
+        only swings the map round - the compass turns, the tilt does not.
 
         Panning: VTK pans in the plane of the screen, so on a tilted view
         sliding sideways also changes your altitude and the scene creeps away.
@@ -397,20 +397,19 @@ class TerrainView(QtWidgets.QWidget):
                 self.plotter.renderer.ResetCameraClippingRange()
             return
 
-        if self._drag_bearing is None:
+        if self._drag_rot is None:
             return
-        vx, vy, vz = (pos[i] - foc[i] for i in range(3))
-        horiz = math.hypot(vx, vy)
+        radius, rise = self._drag_rot
+        vx, vy, _vz = (pos[i] - foc[i] for i in range(3))
+        heading = math.atan2(vx, vy)
+        horiz = math.sqrt(max(radius * radius - rise * rise, 0.0))
         if horiz < 1e-9:
-            return                      # straight overhead: no heading to hold
-        b = self._drag_bearing
-        nx, ny = math.sin(b) * horiz, math.cos(b) * horiz
-        if abs(nx - vx) > 1e-9 or abs(ny - vy) > 1e-9:
-            cam.position = (foc[0] + nx, foc[1] + ny, pos[2])
-        # Keep the horizon level too, except looking almost straight down where
+            return                      # straight overhead: no heading to turn
+        nx, ny = math.sin(heading) * horiz, math.cos(heading) * horiz
+        cam.position = (foc[0] + nx, foc[1] + ny, foc[2] + rise)
+        # Keep the horizon level, except looking almost straight down where
         # "up is +Z" stops meaning anything.
-        r = math.hypot(horiz, vz)
-        if r > 1e-9 and abs(vz) / r < 0.999:
+        if abs(rise) / radius < 0.999:
             cam.up = (0.0, 0.0, 1.0)
         self.plotter.renderer.ResetCameraClippingRange()
 
@@ -454,13 +453,16 @@ class TerrainView(QtWidgets.QWidget):
         cam = self.plotter.camera
         pos, foc = cam.position, cam.focal_point
         self._drag_z = (pos[2], foc[2])
-        self._drag_bearing = math.atan2(pos[0] - foc[0], pos[1] - foc[1])
+        v = [pos[i] - foc[i] for i in range(3)]
+        # Distance to the target and how far the camera sits above it:
+        # hold both and only the compass heading is free to change.
+        self._drag_rot = (math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2), v[2])
 
     def _on_release(self, *_):
         self._drag_button = None
         self._drag_mode = None
         self._drag_z = None
-        self._drag_bearing = None
+        self._drag_rot = None
         if not self.measuring or self._press_pos is None or self.line is None:
             self._press_pos = None
             return

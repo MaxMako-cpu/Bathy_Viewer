@@ -34,7 +34,7 @@ Or drop a `.tif` onto the window. **File › Open** takes `.tif .tiff .vrt .img
 
 | Action | Control |
 | --- | --- |
-| Tilt the view | left-drag up/down |
+| Swing the map round | left-drag left/right |
 | Move the map | shift + left-drag, or middle-drag |
 | Zoom | wheel |
 | Drop a measuring station | left-click (Measure mode on) |
@@ -44,11 +44,12 @@ Or drop a `.tif` onto the window. **File › Open** takes `.tif .tiff .vrt .img
 **Lock Z axis** (on by default) is what makes a left-drag usable on a chart.
 It holds the Z axis still whichever way the drag is moving the camera:
 
-* **Rotating** — VTK's trackball turns the compass as well as the tilt, so
-  dragging sideways spins the whole chart round. With the lock on, the heading
-  from button-down is restored after every move, leaving the tilt — the camera
-  arcing in the vertical plane — as the only rotation a left-drag produces.
-  The horizon is kept level too.
+* **Rotating** — VTK's trackball changes the tilt as well as the heading, so a
+  drag tips the chart out of whatever viewing angle you set. With the lock on,
+  the camera's height above the target and its distance from it are both held,
+  so it stays on one horizontal circle: dragging left and right swings the map
+  round, and the viewing angle you chose survives. The horizon is kept level
+  too. Dragging up and down does nothing until you turn the lock off.
 * **Moving** — VTK pans in the plane of the screen, so on a tilted view sliding
   sideways also changes your altitude and the scene creeps away. Camera and
   focal point shift together, so putting both heights back keeps the horizontal
@@ -101,7 +102,7 @@ smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
 overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 trail_test.py     trail checks: age trimming, 24 h volume, draw cost
-drag_test.py      camera checks: tilt-only rotation, Z lock, wheel, click
+drag_test.py      camera checks: level rotation, Z lock, wheel, click
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
