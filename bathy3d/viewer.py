@@ -13,10 +13,15 @@ from vtkmodules.vtkRenderingCore import vtkPropPicker
 
 from . import ramps
 from .measure import MeasureLine, Station
-from .targets import TargetLayer
+from .targets import BASE_POINT_PX, TargetLayer, draw_on_top
 
 #: Colour of measurement furniture.
 MEASURE_COLOR = "#f0a93c"
+
+#: Station dot size in screen pixels. Smaller than a vehicle dot
+#: (BASE_POINT_PX) on purpose - stations are reference marks, not the
+#: thing being tracked.
+STATION_POINT_PX = BASE_POINT_PX * 0.62
 
 
 class TerrainView(QtWidgets.QWidget):
@@ -366,17 +371,22 @@ class TerrainView(QtWidgets.QWidget):
             [(*self.surface.local_from_crs(s.x, s.y), s.z * self.ve) for s in self.line.stations],
             dtype=float,
         )
-        _c, r = self._focus()
-        rad = max(r / 240.0, 1.0)
-        self.plotter.add_mesh(
-            pv.PolyData(pts).glyph(geom=pv.Sphere(radius=rad), scale=False, orient=False),
-            color=MEASURE_COLOR, name="mpts", render=False, pickable=False,
+        # Screen-constant, and deliberately smaller than a vehicle dot: a
+        # station marks a spot you picked, the vehicles are what you watch.
+        # A world-space sphere sized off a 131 km grid came out over a
+        # kilometre across, which swallowed the seabed once the camera moved in.
+        mark = self.plotter.add_points(
+            pts, color=MEASURE_COLOR, point_size=STATION_POINT_PX,
+            render_points_as_spheres=True, name="mpts",
+            render=False, pickable=False,
         )
+        draw_on_top(mark)
         if len(pts) > 1:
-            self.plotter.add_mesh(
-                pv.lines_from_points(pts), color=MEASURE_COLOR, line_width=3,
+            line = self.plotter.add_mesh(
+                pv.lines_from_points(pts), color=MEASURE_COLOR, line_width=2,
                 name="mline", render=False, pickable=False,
             )
+            draw_on_top(line)
         self.plotter.add_point_labels(
             pts, [str(i + 1) for i in range(len(pts))], name="mlabels",
             font_size=12, text_color="#ffe0b0", shape=None, show_points=False,

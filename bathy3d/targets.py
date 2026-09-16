@@ -31,7 +31,7 @@ DEFAULT_TARGETS = {
 BASE_POINT_PX = 12.0
 
 
-def _on_top(actor) -> None:
+def draw_on_top(actor) -> None:
     """Draw this actor over the terrain instead of letting relief bury it.
 
     A target sitting on the seabed is at exactly the depth of the surface under
@@ -209,7 +209,7 @@ class TargetLayer:
             opacity=0.45 if t.stale else 1.0,
         )
         bag["marker"].SetVisibility(self.visible)
-        _on_top(bag["marker"])
+        draw_on_top(bag["marker"])
 
         bag["label"] = self.plotter.add_point_labels(
             np.array([[lx, ly, lz]], dtype=float), [t.name], name=f"lbl:{t.name}",
@@ -227,7 +227,7 @@ class TargetLayer:
                 render=False, pickable=False,
             )
             bag["stem"].SetVisibility(self.visible)
-            _on_top(bag["stem"])
+            draw_on_top(bag["stem"])
         elif "stem" in bag:
             # Back on the seabed - drop the line rather than leaving it hanging.
             self.plotter.remove_actor(bag.pop("stem"), render=False)
@@ -240,4 +240,4 @@ class TargetLayer:
                 name=f"trail:{t.name}", render=False, pickable=False,
             )
             bag["trail"].SetVisibility(self.visible)
-            _on_top(bag["trail"])
+            draw_on_top(bag["trail"])
