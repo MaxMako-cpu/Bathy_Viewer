@@ -52,8 +52,8 @@ class TerrainView(QtWidgets.QWidget):
         self.ramp_name = "Bathy"
         self.color_by = "Depth"
         self.measuring = True
-        self.left_action = "pan"   # left-drag slides the map; shift-left orbits
-        self.lock_z = True         # ...and keeps the camera at one height
+        self.left_action = "rotate"  # left-drag tilts; shift-left slides the map
+        self.lock_z = True           # no compass spin, no height drift
 
         self._terrain = None  # pv actor
         self._mesh = None
@@ -62,7 +62,9 @@ class TerrainView(QtWidgets.QWidget):
         self._last_hover = 0.0
         self._press_pos = None
         self._drag_button = None
+        self._drag_mode = None
         self._drag_z = None
+        self._drag_bearing = None
         self._picker = vtkPropPicker()
 
         self.plotter.set_background("#0d1418", top="#16232a")
@@ -327,7 +329,7 @@ class TerrainView(QtWidgets.QWidget):
             style.OnMouseMove()
         except Exception:
             pass
-        self._hold_height()
+        self._apply_z_lock()
         self._on_move()
 
     def _style_press(self, style, _event):
@@ -347,17 +349,17 @@ class TerrainView(QtWidgets.QWidget):
     # --------------------------------------------------------- camera control
 
     def set_left_action(self, action: str) -> None:
-        """What a left-drag does: slide the map, or orbit around it.
+        """What a left-drag does: rotate the view, or slide the map.
 
-        Orbiting on left-drag is VTK's default and spins the scene about the
-        vertical axis, which is rarely what you want when you are reading a
-        map. Pan is the default here; orbit stays on shift-left-drag.
+        Rotate is the default, but with Lock Z on it is tilt only - the camera
+        arcs in the vertical plane and the compass heading never moves, which
+        is what makes it usable on a chart. Shift-left does the other one.
         """
-        self.left_action = "orbit" if action == "orbit" else "pan"
+        self.left_action = "pan" if action == "pan" else "rotate"
         try:
             self.plotter.enable_custom_trackball_style(
-                left="rotate" if self.left_action == "orbit" else "pan",
-                shift_left="pan" if self.left_action == "orbit" else "rotate",
+                left=self.left_action,
+                shift_left="pan" if self.left_action == "rotate" else "rotate",
                 middle="pan", right="dolly",
             )
         except Exception:
@@ -366,28 +368,51 @@ class TerrainView(QtWidgets.QWidget):
         # observers have to be hung on the new one every time.
         self._attach_style_observers()
 
-    def _hold_height(self):
-        """Undo the vertical component of a pan.
+    def _apply_z_lock(self):
+        """Hold the Z axis still, whichever way the drag is moving the camera.
 
-        VTK pans in the plane of the screen, so on a tilted view sliding the
-        map sideways also changes your altitude and the whole scene creeps.
-        Camera and focal point are shifted together, so restoring both Z
-        values leaves the view direction untouched and keeps the horizontal
-        part of the move.
+        Rotating: VTK's trackball turns the compass as well as the tilt, so
+        dragging sideways spins the whole chart round. With the lock on, the
+        heading recorded at button-down is restored after every move, leaving
+        the tilt - the camera arcing in the vertical plane - as the only
+        rotation a left-drag produces.
 
+        Panning: VTK pans in the plane of the screen, so on a tilted view
+        sliding sideways also changes your altitude and the scene creeps away.
+        Camera and focal point shift together, so putting both heights back
+        keeps the horizontal part of the move and nothing else.
         """
-        if not self.lock_z or self._drag_z is None:
-            return
-        if self._drag_button != "left" or self.left_action != "pan":
+        if not self.lock_z or self._drag_mode is None:
             return
         cam = self.plotter.camera
-        pz, fz = self._drag_z
         pos, foc = list(cam.position), list(cam.focal_point)
-        if abs(pos[2] - pz) > 1e-9 or abs(foc[2] - fz) > 1e-9:
-            pos[2], foc[2] = pz, fz
-            cam.position = tuple(pos)
-            cam.focal_point = tuple(foc)
-            self.plotter.renderer.ResetCameraClippingRange()
+
+        if self._drag_mode == "pan":
+            if self._drag_z is None:
+                return
+            pz, fz = self._drag_z
+            if abs(pos[2] - pz) > 1e-9 or abs(foc[2] - fz) > 1e-9:
+                pos[2], foc[2] = pz, fz
+                cam.position, cam.focal_point = tuple(pos), tuple(foc)
+                self.plotter.renderer.ResetCameraClippingRange()
+            return
+
+        if self._drag_bearing is None:
+            return
+        vx, vy, vz = (pos[i] - foc[i] for i in range(3))
+        horiz = math.hypot(vx, vy)
+        if horiz < 1e-9:
+            return                      # straight overhead: no heading to hold
+        b = self._drag_bearing
+        nx, ny = math.sin(b) * horiz, math.cos(b) * horiz
+        if abs(nx - vx) > 1e-9 or abs(ny - vy) > 1e-9:
+            cam.position = (foc[0] + nx, foc[1] + ny, pos[2])
+        # Keep the horizon level too, except looking almost straight down where
+        # "up is +Z" stops meaning anything.
+        r = math.hypot(horiz, vz)
+        if r > 1e-9 and abs(vz) / r < 0.999:
+            cam.up = (0.0, 0.0, 1.0)
+        self.plotter.renderer.ResetCameraClippingRange()
 
     def _pick_crs(self):
         """CRS (x, y) under the pointer, or None if the ray missed the surface."""
@@ -411,17 +436,31 @@ class TerrainView(QtWidgets.QWidget):
         self.hovered.emit(self.surface.probe(*pos) if pos else None)
 
     def _on_press(self, *_):
+        iren = self.plotter.iren.interactor
         try:
-            self._press_pos = self.plotter.iren.interactor.GetEventPosition()
+            self._press_pos = iren.GetEventPosition()
         except Exception:
             self._press_pos = None
         self._drag_button = "left"
+        # Shift swaps whatever the left button normally does, so work out
+        # which it is now and lock the matching axis for this drag.
+        try:
+            shift = bool(iren.GetShiftKey())
+        except Exception:
+            shift = False
+        base = self.left_action
+        other = "pan" if base == "rotate" else "rotate"
+        self._drag_mode = other if shift else base
         cam = self.plotter.camera
-        self._drag_z = (cam.position[2], cam.focal_point[2])
+        pos, foc = cam.position, cam.focal_point
+        self._drag_z = (pos[2], foc[2])
+        self._drag_bearing = math.atan2(pos[0] - foc[0], pos[1] - foc[1])
 
     def _on_release(self, *_):
         self._drag_button = None
+        self._drag_mode = None
         self._drag_z = None
+        self._drag_bearing = None
         if not self.measuring or self._press_pos is None or self.line is None:
             self._press_pos = None
             return

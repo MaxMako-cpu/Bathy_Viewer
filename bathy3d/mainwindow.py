@@ -203,17 +203,17 @@ class MainWindow(QtWidgets.QMainWindow):
         dh.setContentsMargins(0, 0, 0, 0)
         dh.addWidget(self._key("Left drag"))
         self.drag_c = QtWidgets.QComboBox()
-        self.drag_c.addItems(["Move map", "Orbit"])
+        self.drag_c.addItems(["Rotate", "Move map"])
         self.drag_c.currentTextChanged.connect(
-            lambda t: self.view.set_left_action("orbit" if t == "Orbit" else "pan"))
+            lambda t: self.view.set_left_action("pan" if t == "Move map" else "rotate"))
         dh.addWidget(self.drag_c, 1)
         ml.addWidget(drow)
-        self.lockz_b = QtWidgets.QPushButton("Keep camera height")
+        self.lockz_b = QtWidgets.QPushButton("Lock Z axis")
         self.lockz_b.setCheckable(True)
         self.lockz_b.setChecked(True)
         self.lockz_b.setToolTip(
-            "Moving the map on a tilted view normally changes your altitude "
-            "as well. This holds the height steady.")
+            "Rotating then tilts only - no compass spin - and moving the map "
+            "keeps your altitude instead of drifting.")
         self.lockz_b.toggled.connect(lambda on: setattr(self.view, "lock_z", on))
         ml.addWidget(self.lockz_b)
         hint = QtWidgets.QLabel(

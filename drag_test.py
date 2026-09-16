@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Checks for camera interaction.
 
-Left-drag must slide the map in X and Y without changing camera height or
-view direction, shift-left must still orbit, and a click with no drag must
-still drop a measuring station.
+With Lock Z on, a left-drag tilts and nothing else: the compass heading and
+the distance to the target must not move. Shift-left slides the map without
+changing altitude, the wheel still zooms, and a click with no drag still
+drops a measuring station.
 
     python drag_test.py [grid.tif]
 """
@@ -13,106 +14,102 @@ GRID = sys.argv[1] if len(sys.argv) > 1 else \
     r"C:\Users\mkozh\OneDrive\Desktop\bathy\BOEM_bathy_WGS84_UTM15N.tif"
 from PySide6 import QtCore, QtWidgets
 from bathy3d.mainwindow import MainWindow
-FAILED = []
-def check(n, c, d=""):
-    print(f"  [{'ok  ' if c else 'FAIL'}] {n}{' - ' + d if d else ''}")
+FAILED=[]
+def check(n,c,d=""):
+    print(f"  [{'ok  ' if c else 'FAIL'}] {n}{' - '+d if d else ''}")
     if not c: FAILED.append(n)
-
 app = QtWidgets.QApplication(sys.argv[:1])
-win = MainWindow(GRID); win.resize(1400, 860); win.show()
-st = {"n": 0}
+win = MainWindow(GRID); win.resize(1400,860); win.show()
+st={'n':0}
 def pump(ms):
-    e = time.monotonic() + ms/1000.0
-    while time.monotonic() < e:
-        app.processEvents(); time.sleep(0.003)
+    e=time.monotonic()+ms/1000
+    while time.monotonic()<e: app.processEvents(); time.sleep(0.003)
 
-def drag(iren, x0, y0, x1, y1, steps=8, shift=0):
-    iren.SetEventInformation(x0, y0, 0, shift)
-    iren.InvokeEvent("LeftButtonPressEvent")
-    for i in range(1, steps+1):
-        iren.SetEventInformation(int(x0+(x1-x0)*i/steps), int(y0+(y1-y0)*i/steps), 0, shift)
+def geom(cam):
+    p,f = cam.position, cam.focal_point
+    v = [p[i]-f[i] for i in range(3)]
+    horiz = math.hypot(v[0],v[1])
+    return (math.degrees(math.atan2(v[0],v[1]))%360,          # compass heading
+            math.degrees(math.atan2(v[2],horiz)),             # tilt above horizon
+            math.hypot(horiz,v[2]))                           # distance
+
+def drag(iren,x0,y0,x1,y1,steps=8,shift=0):
+    iren.SetEventInformation(x0,y0,0,shift); iren.InvokeEvent("LeftButtonPressEvent")
+    for i in range(1,steps+1):
+        iren.SetEventInformation(int(x0+(x1-x0)*i/steps),int(y0+(y1-y0)*i/steps),0,shift)
         iren.InvokeEvent("MouseMoveEvent")
-    iren.SetEventInformation(x1, y1, 0, shift)
-    iren.InvokeEvent("LeftButtonReleaseEvent")
+    iren.SetEventInformation(x1,y1,0,shift); iren.InvokeEvent("LeftButtonReleaseEvent")
 
 def go():
-    st["n"] += 1
+    st['n']+=1
     if win.view.surface is None:
-        if st["n"] > 300: app.quit()
+        if st['n']>300: app.quit()
         return
     t.stop()
-    pl = win.view.plotter
-    iren = pl.iren.interactor
-    w, h = pl.window_size
-    cam = pl.camera
+    pl=win.view.plotter; iren=pl.iren.interactor; cam=pl.camera
+    w,h=pl.window_size
+    win.meas_b.setChecked(False)
+    print(f"  left_action={win.view.left_action} lock_z={win.view.lock_z}")
+    check("left drag rotates by default", win.view.left_action=="rotate")
 
-    def state():
-        return (tuple(cam.position), tuple(cam.focal_point))
+    # vertical drag -> tilt changes, heading does not
+    b0,t0,d0 = geom(cam)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5),int(h*.5)+160); pump(120)
+    b1,t1,d1 = geom(cam)
+    print(f"  vertical drag: heading {b0:.2f}->{b1:.2f}  tilt {t0:.2f}->{t1:.2f}")
+    check("vertical drag tilts", abs(t1-t0) > 3, f"{abs(t1-t0):.2f} deg")
+    check("vertical drag keeps heading", abs(b1-b0) < 1e-6, f"{abs(b1-b0):.6f} deg")
 
-    print(f"  left_action={win.view.left_action}  lock_z={win.view.lock_z}")
-    check("defaults to moving the map", win.view.left_action == "pan")
+    # horizontal drag -> heading must NOT move with lock on
+    b0,t0,d0 = geom(cam)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5)+240,int(h*.5)); pump(120)
+    b1,t1,d1 = geom(cam)
+    print(f"  horizontal drag: heading {b0:.2f}->{b1:.2f}  tilt {t0:.2f}->{t1:.2f}")
+    check("horizontal drag does not spin the compass", abs(b1-b0) < 1e-6,
+          f"{abs(b1-b0):.6f} deg")
+    check("distance to target unchanged", abs(d1-d0) < 1e-3, f"{abs(d1-d0):.4f} m")
 
-    # ---- left drag with height lock
-    win.meas_b.setChecked(False)          # keep clicks from adding stations
-    p0, f0 = state()
-    drag(iren, int(w*0.5), int(h*0.5), int(w*0.5)+220, int(h*0.5)+130)
-    pump(120)
-    p1, f1 = state()
-    dz_cam = abs(p1[2]-p0[2]); dz_foc = abs(f1[2]-f0[2])
+    # unlock -> compass spins again
+    win.lockz_b.setChecked(False); pump(80)
+    b0,_,_ = geom(cam)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5)+240,int(h*.5)); pump(120)
+    b1,_,_ = geom(cam)
+    check("unlocking lets the compass spin", abs(b1-b0) > 5, f"{abs(b1-b0):.2f} deg")
+    win.lockz_b.setChecked(True); pump(80)
+
+    # shift-left moves the map, height held
+    p0 = tuple(cam.position); f0 = tuple(cam.focal_point)
+    drag(iren,int(w*.5),int(h*.5),int(w*.5)+200,int(h*.5)+120,shift=1); pump(120)
+    p1 = tuple(cam.position); f1 = tuple(cam.focal_point)
     dxy = math.hypot(f1[0]-f0[0], f1[1]-f0[1])
-    print(f"  focal moved {dxy:,.0f} m in XY; camera Z {p0[2]:,.1f} -> {p1[2]:,.1f}")
-    check("camera height unchanged", dz_cam < 1e-6, f"delta {dz_cam:.6f}")
-    check("focal height unchanged", dz_foc < 1e-6, f"delta {dz_foc:.6f}")
-    check("map actually moved in X/Y", dxy > 100, f"{dxy:,.0f} m")
+    check("shift-left moves the map", dxy > 100, f"{dxy:,.0f} m")
+    check("moving keeps camera height", abs(p1[2]-p0[2]) < 1e-6,
+          f"delta {abs(p1[2]-p0[2]):.6f}")
 
-    # view direction must survive the pan
-    d0 = tuple(f0[i]-p0[i] for i in range(3))
-    d1 = tuple(f1[i]-p1[i] for i in range(3))
-    diff = max(abs(d1[i]-d0[i]) for i in range(3))
-    check("view direction unchanged (no rotation)", diff < 1e-6, f"max delta {diff:.6f}")
-
-    # ---- shift-left must still orbit
-    p0, f0 = state()
-    drag(iren, int(w*0.5), int(h*0.5), int(w*0.5)+200, int(h*0.5), shift=1)
+    # wheel still zooms, unchanged
+    _,_,d0 = geom(cam)
+    for _ in range(3):
+        iren.SetEventInformation(int(w*.5),int(h*.5),0,0)
+        iren.InvokeEvent("MouseWheelForwardEvent")
     pump(120)
-    p1, f1 = state()
-    moved = math.dist(p0, p1)
-    check("shift-left still orbits", moved > 100, f"camera moved {moved:,.0f} m")
-
-    # ---- switching to Orbit restores the old behaviour
-    win.drag_c.setCurrentText("Orbit"); pump(100)
-    p0, _ = state()
-    drag(iren, int(w*0.5), int(h*0.5), int(w*0.5)+200, int(h*0.5))
+    _,_,d1 = geom(cam)
+    check("wheel still zooms in", d1 < d0*0.99, f"{d0:,.0f} -> {d1:,.0f} m")
+    for _ in range(3):
+        iren.SetEventInformation(int(w*.5),int(h*.5),0,0)
+        iren.InvokeEvent("MouseWheelBackwardEvent")
     pump(120)
-    p1, _ = state()
-    check("Orbit mode rotates on left drag", math.dist(p0, p1) > 100,
-          f"camera moved {math.dist(p0,p1):,.0f} m")
-    win.drag_c.setCurrentText("Move map"); pump(100)
+    _,_,d2 = geom(cam)
+    check("wheel still zooms out", d2 > d1*1.01, f"{d1:,.0f} -> {d2:,.0f} m")
 
-    # ---- unlocking height lets it drift again (proves the lock is doing it)
-    win.lockz_b.setChecked(False); pump(100)
-    p0, _ = state()
-    drag(iren, int(w*0.5), int(h*0.5), int(w*0.5), int(h*0.5)+180)
-    pump(120)
-    p1, _ = state()
-    check("unlocking height lets Z move again", abs(p1[2]-p0[2]) > 1.0,
-          f"delta {abs(p1[2]-p0[2]):,.1f} m")
-    win.lockz_b.setChecked(True); pump(100)
-
-    # ---- a click (no drag) still drops a station
-    win.view.reset_view(); pump(200)      # back over the terrain first
-    win.meas_b.setChecked(True)
-    n0 = len(win.view.line)
-    iren.SetEventInformation(int(w*0.5), int(h*0.5), 0, 0)
-    iren.InvokeEvent("LeftButtonPressEvent")
-    iren.SetEventInformation(int(w*0.5), int(h*0.5), 0, 0)
-    iren.InvokeEvent("LeftButtonReleaseEvent")
+    # click still measures
+    win.view.reset_view(); pump(200); win.meas_b.setChecked(True)
+    n0=len(win.view.line)
+    iren.SetEventInformation(int(w*.5),int(h*.5),0,0); iren.InvokeEvent("LeftButtonPressEvent")
+    iren.SetEventInformation(int(w*.5),int(h*.5),0,0); iren.InvokeEvent("LeftButtonReleaseEvent")
     pump(150)
-    check("click still measures", len(win.view.line) == n0+1,
-          f"{n0} -> {len(win.view.line)}")
+    check("click still measures", len(win.view.line)==n0+1, f"{n0} -> {len(win.view.line)}")
     QtCore.QTimer.singleShot(200, app.quit)
 
-t = QtCore.QTimer(); t.timeout.connect(go); t.start(100)
-app.exec()
-print("FAILED: " + ", ".join(FAILED) if FAILED else "all drag checks passed")
+t=QtCore.QTimer(); t.timeout.connect(go); t.start(100); app.exec()
+print("FAILED: " + ", ".join(FAILED) if FAILED else "all camera checks passed")
 sys.exit(1 if FAILED else 0)

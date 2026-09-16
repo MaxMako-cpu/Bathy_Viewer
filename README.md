@@ -34,23 +34,29 @@ Or drop a `.tif` onto the window. **File › Open** takes `.tif .tiff .vrt .img
 
 | Action | Control |
 | --- | --- |
-| Move the map | left-drag |
-| Orbit | shift + left-drag |
+| Tilt the view | left-drag up/down |
+| Move the map | shift + left-drag, or middle-drag |
 | Zoom | wheel |
-| Pan | middle-drag |
 | Drop a measuring station | left-click (Measure mode on) |
 | Remove last station | **Undo** |
 | Reset / plan view | View menu |
 
-Left-drag slides the map in X and Y rather than orbiting, because orbiting is
-rarely what you want while reading a chart. **Left drag** in the Pointer panel
-switches it back to Orbit if you prefer.
+**Lock Z axis** (on by default) is what makes a left-drag usable on a chart.
+It holds the Z axis still whichever way the drag is moving the camera:
 
-**Keep camera height** (on by default) holds your altitude while you move.
-VTK pans in the plane of the screen, so on a tilted view sliding the map
-sideways also changes how high you are and the scene creeps away from you;
-camera and focal point are shifted together, so restoring both heights leaves
-the view direction untouched.
+* **Rotating** — VTK's trackball turns the compass as well as the tilt, so
+  dragging sideways spins the whole chart round. With the lock on, the heading
+  from button-down is restored after every move, leaving the tilt — the camera
+  arcing in the vertical plane — as the only rotation a left-drag produces.
+  The horizon is kept level too.
+* **Moving** — VTK pans in the plane of the screen, so on a tilted view sliding
+  sideways also changes your altitude and the scene creeps away. Camera and
+  focal point shift together, so putting both heights back keeps the horizontal
+  part of the move and nothing else.
+
+Turn it off and you get normal orbiting. **Left drag** in the Pointer panel
+swaps the buttons over if you would rather move the map with the plain
+left-drag and rotate with shift.
 
 The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing,
 CRS easting/northing, latitude/longitude, and the source pixel. The **Measured
@@ -95,7 +101,7 @@ smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
 overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 trail_test.py     trail checks: age trimming, 24 h volume, draw cost
-drag_test.py      camera checks: left-drag pans, height locked, click measures
+drag_test.py      camera checks: tilt-only rotation, Z lock, wheel, click
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
