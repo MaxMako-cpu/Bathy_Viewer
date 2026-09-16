@@ -21,7 +21,11 @@ import pyvista as pv
 #: The feed carries no heading, so all three are dots - the directional vessel
 #: glyph is kept in _glyph() for when a heading source exists.
 DEFAULT_TARGETS = {
-    "Vessel": {"color": "#ff3ad2", "kind": "dot", "size": 1.15},       # magenta
+    # No drop line for the vessel: it is on the surface with a kilometre and a
+    # half of water under it, so a line to the seabed says nothing useful and
+    # runs the height of the scene. Its umbilicals do the connecting instead.
+    "Vessel": {"color": "#ff3ad2", "kind": "dot", "size": 1.15,
+               "stem": False},                                          # magenta
     "UHD333": {"color": "#ff3b30", "kind": "dot", "size": 0.9},        # red
     "UHD334": {"color": "#2ecc50", "kind": "dot", "size": 0.9},        # green
     # Each TMS in a darker shade of its own ROV, so the pairing reads at a
@@ -95,6 +99,7 @@ class Target:
     trail: deque = field(default_factory=lambda: deque(maxlen=MAX_TRAIL_POINTS))
     speed: float = float("nan")   # metres per second over the ground
     updated_at: float = 0.0       # monotonic clock of the last fix
+    stem: bool = True             # draw a drop line down to the seabed
 
     @property
     def fix(self) -> bool:
@@ -281,12 +286,16 @@ class TargetLayer:
             cells.extend([2, 2 * i, 2 * i + 1])
         return pv.PolyData(np.asarray(pts), lines=np.asarray(cells, dtype=np.int64))
 
-    def draw_tethers(self, pairs: dict) -> None:
-        """One thin dotted line from each TMS down to its ROV."""
-        for rov, tms in pairs.items():
-            name = f"tether:{rov}"
+    def draw_links(self, pairs: dict) -> None:
+        """A thin dotted line between each pair of bodies.
+
+        Used for both the tethers (TMS down to its ROV) and the umbilicals
+        (vessel down to each TMS), so the whole chain reads as one line.
+        """
+        for lower, upper in pairs.items():
+            name = f"link:{lower}"
             self.plotter.remove_actor(name, render=False)
-            a, b = self.targets.get(rov), self.targets.get(tms)
+            a, b = self.targets.get(lower), self.targets.get(upper)
             # A tether to a hidden TMS is a line to nowhere, so it goes with it.
             if not (self.visible and self.tethers_visible and self.tms_visible
                     and a is not None and b is not None and a.fix and b.fix
@@ -361,7 +370,7 @@ class TargetLayer:
 
         # Drop line to the seabed, so depth reads against the terrain.
         p = self.surface.probe(t.x, t.y)
-        if p is not None and abs(t.z - p.z) > 1e-6:
+        if t.stem and p is not None and abs(t.z - p.z) > 1e-6:
             bag["stem"] = self.plotter.add_mesh(
                 pv.Line((lx, ly, p.z * self._ve), (lx, ly, lz)), color=t.color,
                 line_width=1, opacity=0.5, name=f"stem:{t.name}",

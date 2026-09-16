@@ -46,6 +46,10 @@ DEPTH_ORDER = ("UHD333", "UHD334", "TMS333", "TMS334")
 #: for pairing the two in the readout.
 TETHERS = {"UHD333": "TMS333", "UHD334": "TMS334"}
 
+#: Umbilicals: each TMS hangs off the vessel. Drawn the same way as a tether,
+#: so the whole chain from ship to ROV reads as one line.
+UMBILICALS = {"TMS333": "Vessel", "TMS334": "Vessel"}
+
 DEFAULT_PORT = 6451
 DEFAULT_DEPTH_PORT = 6452
 

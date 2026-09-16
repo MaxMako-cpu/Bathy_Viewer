@@ -28,7 +28,8 @@ PPORT, DPORT = 6481, 6482
 
 from PySide6 import QtCore, QtWidgets        # noqa: E402
 from bathy3d.feed import (DEPTH_FIELDS, DEPTH_ORDER, ORDER, POSITION_FIELDS,
-                          TETHERS, parse_depths, parse_records)  # noqa: E402
+                          TETHERS, UMBILICALS, parse_depths,
+                          parse_records)  # noqa: E402
 from bathy3d.mainwindow import MainWindow    # noqa: E402
 from bathy3d.targets import TMS_DIAMETER_M, TMS_HEIGHT_M        # noqa: E402
 
@@ -160,21 +161,27 @@ check("TMS is 3 m across and 2 m tall",
       TMS_DIAMETER_M == 3.0 and TMS_HEIGHT_M == 2.0)
 actors = win.view.plotter.renderer.actors
 for rov in TETHERS:
-    check(f"tether drawn for {rov}", f"tether:{rov}" in actors,
-          str([a for a in actors if a.startswith("tether")]))
+    check(f"tether drawn for {rov}", f"link:{rov}" in actors,
+          str([a for a in actors if a.startswith("link")]))
+for tms in UMBILICALS:
+    check(f"umbilical drawn from vessel to {tms}", f"link:{tms}" in actors,
+          str([a for a in actors if a.startswith("link")]))
+check("no drop line hanging off the vessel",
+      "stem:Vessel" not in actors,
+      str([a for a in actors if a.startswith("stem")]))
 
 win.tms_b.setChecked(False)
 pump(300)
 vis = actors.get("tgt:TMS333")
 check("hiding TMS hides the cylinder", vis is not None and not vis.GetVisibility())
-check("hiding TMS removes the tethers",
-      not any(a.startswith("tether") for a in win.view.plotter.renderer.actors),
-      str([a for a in win.view.plotter.renderer.actors if a.startswith("tether")]))
+check("hiding TMS removes tethers and umbilicals",
+      not any(a.startswith("link") for a in win.view.plotter.renderer.actors),
+      str([a for a in win.view.plotter.renderer.actors if a.startswith("link")]))
 win.tms_b.setChecked(True)
 pump(300)
 check("showing TMS brings them back",
       actors.get("tgt:TMS333").GetVisibility()
-      and any(a.startswith("tether") for a in win.view.plotter.renderer.actors))
+      and any(a.startswith("link") for a in win.view.plotter.renderer.actors))
 
 print("\nwhen the depth feed stops:")
 row = {win.tgt_table.item(r, 0).text(): r for r in range(win.tgt_table.rowCount())}

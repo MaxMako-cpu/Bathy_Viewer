@@ -209,9 +209,18 @@ the feed and the grid must agree (UTM 15N for the BOEM file).
 | UHD333 / UHD334 | red and green dots, at their reported depth |
 | TMS333 / TMS334 | darker red and green cylinders, 3 m × 2 m, at their depth |
 
-Each TMS is joined to its own ROV by a thin dotted tether, and **Show TMS**
-hides the cylinders and their tethers together. A drop line runs from each body
-to the seabed beneath it, so height off bottom reads at a glance.
+Thin dotted lines run the length of the chain: an **umbilical** from the vessel
+down to each TMS, and a **tether** from each TMS down to its own ROV. **Show
+TMS** hides the cylinders and both sets of lines together.
+
+A drop line runs from each subsea body to the seabed beneath it, so height off
+bottom reads at a glance. The vessel has none — it floats over a kilometre and
+a half of water, so a line to the bottom says nothing and runs the height of
+the scene. Its umbilicals do the connecting instead.
+
+For the umbilicals to read correctly the vessel wants to be at the surface:
+turn on *Vessel at sea surface*, or it is drawn on the bottom beneath itself
+and its umbilicals run upward.
 
 The two feeds are independent and carry no timestamps, so there is no honest
 way to time-align them. Each vehicle keeps its latest position and its latest

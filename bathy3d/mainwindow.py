@@ -15,7 +15,7 @@ from . import raster
 from .feed import (DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
-                   explain)
+                   UMBILICALS, explain)
 from .measure import compass
 from . import ramps
 from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
@@ -927,7 +927,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.view.targets.mark_stale(nm)
             self._set_row(r, e, n, shown, "0 s", tgt.speed, alt)
 
-        self.view.targets.draw_tethers(TETHERS)
+        self.view.targets.draw_links(TETHERS)
+        self.view.targets.draw_links(UMBILICALS)
         if self._framed_feed is False:
             # At full extent a pixel is ~90 m of seabed, so a vehicle moving at
             # 0.6 m/s looks frozen. Frame them once when the first fix lands.
@@ -956,7 +957,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _tms_toggled(self, on):
         self.view.targets.set_tms_visible(on)
-        self.view.targets.draw_tethers(TETHERS)
+        self.view.targets.draw_links(TETHERS)
+        self.view.targets.draw_links(UMBILICALS)
         self.view.plotter.render()
 
     def _check_stale(self):
