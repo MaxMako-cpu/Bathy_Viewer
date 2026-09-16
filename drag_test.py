@@ -105,6 +105,32 @@ def go():
     _,_,d2 = geom(cam)
     check("wheel still zooms out", d2 > d1*1.01, f"{d1:,.0f} -> {d2:,.0f} m")
 
+    # zoom must reach close in without the near plane clipping the seabed
+    win.view.reset_view(); pump(150)
+    _,_,far = geom(cam)
+    for _ in range(70):
+        iren.SetEventInformation(int(w*.5), int(h*.55), 0, 0)
+        iren.InvokeEvent("MouseWheelForwardEvent")
+    pump(150)
+    _,_,near_d = geom(cam)
+    near_plane = cam.clipping_range[0]
+    print(f"  zoom: {far:,.0f} m -> {near_d:,.2f} m, near plane {near_plane:.3f} m")
+    check("zooms right in", near_d < 5, f"{near_d:,.2f} m")
+    check("near plane follows the camera", near_plane < near_d,
+          f"near {near_plane:.3f} vs distance {near_d:.2f}")
+    import numpy as _np
+    img = _np.asarray(pl.screenshot(return_img=True))
+    bg = _np.array([13,20,24])
+    covered = (_np.abs(img.astype(int)-bg).sum(axis=2) > 40).mean()
+    check("seabed still fills the frame when close", covered > 0.55,
+          f"{covered*100:.1f}% covered")
+    for _ in range(200):
+        iren.SetEventInformation(int(w*.5), int(h*.5), 0, 0)
+        iren.InvokeEvent("MouseWheelBackwardEvent")
+    pump(150)
+    _,_,out = geom(cam)
+    check("zoom out is capped", out < 2e6, f"{out:,.0f} m")
+
     # click still measures
     win.view.reset_view(); pump(200); win.meas_b.setChecked(True)
     n0=len(win.view.line)

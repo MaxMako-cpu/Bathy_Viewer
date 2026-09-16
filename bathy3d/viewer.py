@@ -27,6 +27,17 @@ STATION_POINT_PX = BASE_POINT_PX * 0.62
 #: and a preplot can run to thousands of points.
 OVERLAY_POINT_PX = 5.0
 
+#: Closest the camera may come to what it is looking at. Verified usable:
+#: with the pointer on the seabed the view still fills the frame at 1 m.
+MIN_ZOOM_M = 1.0
+
+#: Furthest out, as a multiple of the terrain's diagonal. Without a cap
+#: the wheel runs away to astronomical distances and the grid vanishes.
+MAX_ZOOM_SPANS = 6.0
+
+#: Distance multiplier per wheel notch.
+ZOOM_STEP = 1.25
+
 
 class TerrainView(QtWidgets.QWidget):
     """Wraps a PyVista Qt interactor and everything drawn inside it."""
@@ -174,7 +185,7 @@ class TerrainView(QtWidgets.QWidget):
         for layer in self.overlays.values():
             self._draw_overlay(layer)
         self._redraw_measure()
-        self.plotter.renderer.ResetCameraClippingRange()
+        self.update_clipping()
         self.plotter.render()
 
     def set_sun(self, az: float | None = None, alt: float | None = None) -> None:
@@ -239,7 +250,7 @@ class TerrainView(QtWidgets.QWidget):
                c[2] + d * math.sin(e))
         up = (0, 0, 1) if el < 88 else (0, 1, 0)
         self.plotter.camera_position = [pos, c, up]
-        self.plotter.renderer.ResetCameraClippingRange()
+        self.update_clipping()
         self.plotter.render()
 
     def reset_view(self) -> None:
@@ -263,7 +274,7 @@ class TerrainView(QtWidgets.QWidget):
         cam = self.plotter.camera
         offset = np.asarray(cam.position, float) - np.asarray(cam.focal_point, float)
         self.plotter.camera_position = [tuple(centre + offset), tuple(centre), (0, 0, 1)]
-        self.plotter.renderer.ResetCameraClippingRange()
+        self.update_clipping()
         return True
 
     def metres_per_pixel(self) -> float:
@@ -296,7 +307,7 @@ class TerrainView(QtWidgets.QWidget):
         direction = direction / float(np.linalg.norm(direction))
         pos = np.asarray(centre, float) + direction * spread * 3.2
         self.plotter.camera_position = [tuple(pos), centre, (0, 0, 1)]
-        self.plotter.renderer.ResetCameraClippingRange()
+        self.update_clipping()
         self.plotter.render()
         return True
 
@@ -320,6 +331,80 @@ class TerrainView(QtWidgets.QWidget):
         style.AddObserver("MouseMoveEvent", self._style_move, -1.0)
         style.AddObserver("LeftButtonPressEvent", self._style_press, -1.0)
         style.AddObserver("LeftButtonReleaseEvent", self._style_release, -1.0)
+        style.AddObserver("MouseWheelForwardEvent", self._style_wheel_in, -1.0)
+        style.AddObserver("MouseWheelBackwardEvent", self._style_wheel_out, -1.0)
+
+    # ----------------------------------------------------------------- zoom
+
+    def _scene_span(self) -> float:
+        """Diagonal of the terrain, used to scale the zoom limits."""
+        if self._terrain is None:
+            return 1000.0
+        b = self._terrain.GetBounds()
+        span = math.dist((b[0], b[2], b[4]), (b[1], b[3], b[5]))
+        return span if span > 1.0 else 1000.0
+
+    def update_clipping(self) -> None:
+        """Set the clipping range from the camera distance, not scene bounds.
+
+        VTK's ResetCameraClippingRange derives the range from what is in the
+        scene and then clamps the near plane to far/1000. On a 130 km grid that
+        pins it near 110 m, so closing to within 110 m of the seabed clips the
+        seabed away and zooming appears to stop. Deriving both planes from the
+        current distance keeps the ratio sane at every scale instead.
+        """
+        cam = self.plotter.camera
+        d = math.dist(cam.position, cam.focal_point)
+        near = max(d * 0.0015, 0.02)
+        cam.clipping_range = (near, d + self._scene_span() * 2.0)
+
+    def _style_wheel_in(self, _style, _event):
+        self.zoom(1.0 / ZOOM_STEP)
+
+    def _style_wheel_out(self, _style, _event):
+        self.zoom(ZOOM_STEP)
+
+    def _pick_world(self):
+        """World point under the pointer, or None if it missed the terrain."""
+        if self._terrain is None:
+            return None
+        try:
+            x, y = self.plotter.iren.interactor.GetEventPosition()
+        except Exception:
+            return None
+        if not self._picker.Pick(x, y, 0, self.plotter.renderer):
+            return None
+        return np.asarray(self._picker.GetPickPosition(), dtype=float)
+
+    def zoom(self, factor: float) -> None:
+        """Zoom about the seabed under the pointer.
+
+        VTK dollies towards the focal point, which sits at the middle of the
+        scene - in open water above the bottom. Keep pulling on the wheel and
+        the camera arrives there and then passes through the seabed, which is
+        what made close zoom useless. Anchoring on the point under the pointer
+        keeps that spot still on screen and converges the camera onto the
+        surface instead, so closing right in stays meaningful.
+        """
+        cam = self.plotter.camera
+        pos = np.asarray(cam.position, dtype=float)
+        foc = np.asarray(cam.focal_point, dtype=float)
+        anchor = self._pick_world()
+        if anchor is None:
+            anchor = foc
+        pos = anchor + (pos - anchor) * factor
+        foc = anchor + (foc - anchor) * factor
+
+        span = self._scene_span()
+        d = float(np.linalg.norm(pos - foc))
+        if d > 1e-12:
+            capped = min(max(d, MIN_ZOOM_M), span * MAX_ZOOM_SPANS)
+            if abs(capped - d) > 1e-9:
+                pos = foc + (pos - foc) * (capped / d)
+        cam.position = tuple(pos)
+        cam.focal_point = tuple(foc)
+        self.update_clipping()
+        self.plotter.render()
 
     # An observer on a style replaces its default handling, so each of these
     # invokes the default itself and then adds our own behaviour.
@@ -394,7 +479,7 @@ class TerrainView(QtWidgets.QWidget):
             if abs(pos[2] - pz) > 1e-9 or abs(foc[2] - fz) > 1e-9:
                 pos[2], foc[2] = pz, fz
                 cam.position, cam.focal_point = tuple(pos), tuple(foc)
-                self.plotter.renderer.ResetCameraClippingRange()
+                self.update_clipping()
             return
 
         if self._drag_rot is None:
@@ -411,7 +496,7 @@ class TerrainView(QtWidgets.QWidget):
         # "up is +Z" stops meaning anything.
         if abs(rise) / radius < 0.999:
             cam.up = (0.0, 0.0, 1.0)
-        self.plotter.renderer.ResetCameraClippingRange()
+        self.update_clipping()
 
     def _pick_crs(self):
         """CRS (x, y) under the pointer, or None if the ray missed the surface."""

@@ -16,7 +16,7 @@ from .feed import DEFAULT_PORT, ORDER, PositionFeed, STALE_AFTER, explain
 from .measure import compass
 from .ramps import DEPTH_RAMPS
 from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
-from . import vectors
+from . import prefs, vectors
 from .viewer import TerrainView
 
 OPEN_FILTER = (
@@ -135,14 +135,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_controls()
         self._build_readout()
         self._build_menu()
+        self._apply_saved_view()
         self.statusBar().showMessage("No grid loaded - File › Open, or drop a GeoTIFF here")
 
         self._stale_timer = QtCore.QTimer(self)
         self._stale_timer.timeout.connect(self._check_stale)
         self._stale_timer.start(1000)
 
-        if path:
-            QtCore.QTimer.singleShot(60, lambda: self.open_path(path))
+        self._restore_overlays = None
+        start = path
+        if start is None and prefs.restore_on_start():
+            start = prefs.last_grid()
+            if start:
+                self._restore_overlays = prefs.overlays()
+        if start:
+            QtCore.QTimer.singleShot(60, lambda p=start: self.open_path(p))
+        geo = prefs.geometry()
+        if geo is not None:
+            try:
+                self.restoreGeometry(geo)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------- left rail
 
@@ -463,6 +476,9 @@ class MainWindow(QtWidgets.QMainWindow):
         m.addAction("Export measurement &CSV…").triggered.connect(self.export_csv)
         m.addAction("Save &screenshot…").triggered.connect(self.save_screenshot)
         m.addSeparator()
+        m.addAction("Forget remembered files").triggered.connect(
+            self.forget_session)
+        m.addSeparator()
         q = m.addAction("E&xit")
         q.setShortcut(QtGui.QKeySequence.Quit)
         q.triggered.connect(self.close)
@@ -484,9 +500,10 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------- file open
 
     def open_dialog(self):
-        start = os.path.dirname(self._path) if self._path else os.path.expanduser("~")
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open grid", start, OPEN_FILTER)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open grid", prefs.last_dir("grid"), OPEN_FILTER)
         if path:
+            prefs.set_last_dir("grid", path)
             self.open_path(path)
 
     def open_path(self, path: str):
@@ -509,6 +526,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prog.setValue(100)
         self.prog.close()
         self._path = surf.path
+        prefs.set_last_grid(surf.path)
+        prefs.set_last_dir("grid", surf.path)
         self.view.set_surface(surf)
         self.ov_list.clear()
         self.setWindowTitle(f"Bathy3D — {os.path.basename(surf.path)}")
@@ -542,6 +561,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"  •  nodata {surf.nodata}{band_note}{probe_note}"
         )
         self._refresh_measure()
+        if self._restore_overlays:
+            wanted, self._restore_overlays = self._restore_overlays, None
+            for p in wanted:
+                self.add_overlay_path(p, remember=False)
 
     def _load_failed(self, msg):
         self.prog.close()
@@ -635,13 +658,13 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------- overlays
 
     def add_overlay_dialog(self):
-        start = os.path.dirname(self._path) if self._path else os.path.expanduser("~")
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Add shapefile overlay", start, SHP_FILTER)
+            self, "Add shapefile overlay", prefs.last_dir("shp"), SHP_FILTER)
         if path:
+            prefs.set_last_dir("shp", path)
             self.add_overlay_path(path)
 
-    def add_overlay_path(self, path):
+    def add_overlay_path(self, path, remember=True):
         if self.view.surface is None:
             QtWidgets.QMessageBox.information(
                 self, "Load a grid first",
@@ -677,6 +700,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                    f"CRS: {layer.crs_name}",
                                    layer.path]))
         self.ov_list.addItem(item)
+        if remember:
+            prefs.set_last_dir("shp", path)
+        self._save_overlay_list()
         self.ov_hint.setText(f"{layer.name}: {layer.summary()}")
         note = "" if layer.dropped == 0 else f"  •  {layer.dropped:,} vertices off grid"
         self.statusBar().showMessage(
@@ -702,6 +728,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.view.remove_overlay(item.text())
         self.ov_list.takeItem(self.ov_list.row(item))
+        self._save_overlay_list()
+
+    def _save_overlay_list(self):
+        prefs.set_overlays([
+            self.view.overlays[self.ov_list.item(i).text()].path
+            for i in range(self.ov_list.count())
+            if self.ov_list.item(i).text() in self.view.overlays
+        ])
 
     # --------------------------------------------------------- position feed
 
@@ -872,9 +906,73 @@ class MainWindow(QtWidgets.QMainWindow):
         self._demo.timeout.connect(tick)
         self._demo.start(120)
 
+    # ------------------------------------------------------------ settings
+
+    def _save_prefs(self):
+        try:
+            prefs.set_geometry(self.saveGeometry())
+            prefs.set_view("view/ve", self.ve_s.value() / 10.0)
+            prefs.set_view("view/sun_az", self.az_s.value())
+            prefs.set_view("view/sun_alt", self.al_s.value())
+            prefs.set_view("view/ramp", self.ramp_c.currentText())
+            prefs.set_view("view/color_by", self.by_c.currentText())
+            prefs.set_view("view/detail", self.detail_c.currentText())
+            prefs.set_view("view/left_action", self.view.left_action)
+            prefs.set_view("view/lock_z", self.view.lock_z)
+            prefs.set_view("view/trail", self.trail_c.currentText())
+            prefs.set_view("feed/port", self.port_s.value())
+            self._save_overlay_list()
+        except Exception:
+            pass
+
+    def _apply_saved_view(self):
+        """Put the controls where they were left, without firing reloads."""
+        for widget, value in (
+            (self.ve_s, int(round(prefs.view("view/ve") * 10))),
+            (self.az_s, prefs.view("view/sun_az")),
+            (self.al_s, prefs.view("view/sun_alt")),
+            (self.port_s, prefs.view("feed/port")),
+        ):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        for combo, value in (
+            (self.ramp_c, prefs.view("view/ramp")),
+            (self.by_c, prefs.view("view/color_by")),
+            (self.detail_c, prefs.view("view/detail")),
+            (self.trail_c, prefs.view("view/trail")),
+            (self.drag_c, "Move map" if prefs.view("view/left_action") == "pan"
+                          else "Rotate"),
+        ):
+            combo.blockSignals(True)
+            combo.setCurrentText(value)
+            combo.blockSignals(False)
+        self.ve_l.setText(f"{prefs.view('view/ve'):.1f}\u00d7")
+        self.az_l.setText(f"{prefs.view('view/sun_az')}\u00b0")
+        self.al_l.setText(f"{prefs.view('view/sun_alt')}\u00b0")
+        self.lockz_b.blockSignals(True)
+        self.lockz_b.setChecked(bool(prefs.view("view/lock_z")))
+        self.lockz_b.blockSignals(False)
+        # Push them into the view, which has fired no signals of its own.
+        self.view.ve = prefs.view("view/ve")
+        self.view.sun_az = prefs.view("view/sun_az")
+        self.view.sun_alt = prefs.view("view/sun_alt")
+        self.view.ramp_name = prefs.view("view/ramp")
+        self.view.color_by = prefs.view("view/color_by")
+        self.view.lock_z = bool(prefs.view("view/lock_z"))
+        self.view.set_left_action(prefs.view("view/left_action"))
+        self.view.targets.set_trail_seconds(
+            TRAILS.get(prefs.view("view/trail"), DEFAULT_TRAIL_SECONDS))
+
+    def forget_session(self):
+        prefs.forget_session()
+        self.statusBar().showMessage(
+            "Forgotten - the next start will open empty", 5000)
+
     # ----------------------------------------------------------------- close
 
     def closeEvent(self, e):
+        self._save_prefs()
         if self._demo:
             self._demo.stop()
         if self.feed is not None:

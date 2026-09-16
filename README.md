@@ -55,6 +55,15 @@ It holds the Z axis still whichever way the drag is moving the camera:
   focal point shift together, so putting both heights back keeps the horizontal
   part of the move and nothing else.
 
+**Zoom** anchors on the seabed under the pointer rather than the middle of the
+scene. VTK dollies towards the focal point, which sits in open water above the
+bottom, so pulling on the wheel used to drive the camera through the seabed.
+The clipping range is also derived from the camera distance instead of the
+scene bounds — VTK clamps the near plane to far/1000, which on a 130 km grid
+pinned it near 110 m and clipped the bottom away as soon as you got close.
+Between them the wheel now runs from 902 km out to 1 m off the seabed with the
+view still full. Both ends are capped so the wheel cannot run away.
+
 Turn it off and you get normal orbiting. **Left drag** in the Pointer panel
 swaps the buttons over if you would rather move the map with the plain
 left-drag and rotate with shift.
@@ -102,7 +111,8 @@ smoke_test.py     headless checks: load, probe vs rasterio, measure, render
 feed_test.py      UDP checks: wire parsing + live datagrams into the window
 overlay_test.py   shapefile checks: drape, toggle, exaggeration, remove
 trail_test.py     trail checks: age trimming, 24 h volume, draw cost
-drag_test.py      camera checks: level rotation, Z lock, wheel, click
+drag_test.py      camera checks: level rotation, Z lock, zoom depth, click
+prefs_test.py     restart checks: files, folders and settings remembered
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -110,9 +120,25 @@ bathy3d/
   targets.py      vessel / ROV markers, trails, drop lines
   feed.py         UDP listener + record parser
   vectors.py      shapefile reader; reproject, densify, drape
+  prefs.py        what is remembered between runs
   ramps.py        colour ramps
   mainwindow.py   PySide6 window, panels, menus, loader thread
 ```
+
+## What it remembers
+
+The grid and the shapefiles you had open are reopened on the next start, and
+the file dialogs come back to the folders you used. Settings come back too:
+exaggeration, sun, ramp, colour-by, mesh detail, trail retention, UDP port,
+left-drag mode and the Z lock, plus the window size and position.
+
+Files that have moved or been deleted are skipped rather than reported as
+errors. **File › Forget remembered files** clears the grid and overlays so the
+next start opens empty; the remembered folders survive that. Passing a grid on
+the command line takes precedence over the remembered one.
+
+Settings live in QSettings — the registry on Windows — so there is no file to
+mislay.
 
 ## Shapefile overlays
 
