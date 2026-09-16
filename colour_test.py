@@ -18,7 +18,7 @@ GRID = sys.argv[1] if len(sys.argv) > 1 else \
     r"C:\Users\mkozh\OneDrive\Desktop\bathy\BOEM_bathy_WGS84_UTM15N.tif"
 SHP = sys.argv[2] if len(sys.argv) > 2 else os.path.join(APP, "EGN10_Preplot_SHP.shp")
 
-from PySide6 import QtCore, QtWidgets          # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets   # noqa: E402
 from bathy3d import prefs, ramps               # noqa: E402
 
 FAILED = []
@@ -102,9 +102,30 @@ pump(400)
 layer = win.view.overlays.get("EGN10_Preplot_SHP")
 check("overlay loaded", layer is not None)
 first = layer.color
-win.view.set_overlay_colour("EGN10_Preplot_SHP", "#ff00aa")
-win._save_overlay_list()
-pump(200)
+
+# Press the real button, the way a user does. Driving this through the view API
+# is what let it ship doing nothing: a QListWidget selects nothing when an item
+# is added, so currentItem() was None and the handler bailed out silently.
+check("a new layer is selected, so the button has a target",
+      win.ov_list.currentItem() is not None,
+      f"currentRow {win.ov_list.currentRow()}")
+
+opened = {"n": 0}
+_real_colour = QtWidgets.QColorDialog.getColor
+
+
+def _fake_colour(initial, parent=None, title=""):
+    opened["n"] += 1
+    return QtGui.QColor("#ff00aa")
+
+
+QtWidgets.QColorDialog.getColor = staticmethod(_fake_colour)
+try:
+    win.ov_colour_b.click()
+    pump(300)
+finally:
+    QtWidgets.QColorDialog.getColor = _real_colour
+check("the Colour button opens the picker", opened["n"] == 1, f"{opened['n']} times")
 check("colour changed", win.view.overlays["EGN10_Preplot_SHP"].color == "#ff00aa",
       f"{first} -> {win.view.overlays['EGN10_Preplot_SHP'].color}")
 actor = win.view.plotter.renderer.actors.get("ov:EGN10_Preplot_SHP")
@@ -112,6 +133,17 @@ rgb = actor.GetProperty().GetColor() if actor else (0, 0, 0)
 check("the drawn layer really is that colour",
       abs(rgb[0] - 1.0) < 0.02 and rgb[1] < 0.02 and abs(rgb[2] - 2 / 3) < 0.05,
       f"rgb {tuple(round(c, 3) for c in rgb)}")
+
+# double-click must reach the same place even with nothing selected
+win.ov_list.setCurrentItem(None)
+opened["n"] = 0
+QtWidgets.QColorDialog.getColor = staticmethod(_fake_colour)
+try:
+    win.ov_list.itemDoubleClicked.emit(win.ov_list.item(0))
+    pump(200)
+finally:
+    QtWidgets.QColorDialog.getColor = _real_colour
+check("double-click opens the picker too", opened["n"] == 1, f"{opened['n']} times")
 
 win.close()
 pump(300)

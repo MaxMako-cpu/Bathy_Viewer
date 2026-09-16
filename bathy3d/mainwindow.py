@@ -251,12 +251,12 @@ class MainWindow(QtWidgets.QMainWindow):
         oh.setContentsMargins(0, 0, 0, 0)
         add_b = QtWidgets.QPushButton("Add shapefile…")
         add_b.clicked.connect(self.add_overlay_dialog)
-        col_b = QtWidgets.QPushButton("Colour…")
-        col_b.clicked.connect(self.pick_overlay_colour)
+        self.ov_colour_b = QtWidgets.QPushButton("Colour…")
+        self.ov_colour_b.clicked.connect(self.pick_overlay_colour)
         rm_b = QtWidgets.QPushButton("Remove")
         rm_b.clicked.connect(self.remove_overlay)
         oh.addWidget(add_b, 1)
-        oh.addWidget(col_b)
+        oh.addWidget(self.ov_colour_b)
         oh.addWidget(rm_b)
         ol.addWidget(orow)
         self.ov_hint = QtWidgets.QLabel(
@@ -729,6 +729,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                    f"CRS: {layer.crs_name}",
                                    layer.path]))
         self.ov_list.addItem(item)
+        self.ov_list.setCurrentItem(item)   # so Colour... has something to act on
         if remember:
             prefs.set_last_dir("shp", path)
         self._save_overlay_list()
@@ -750,9 +751,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def pick_overlay_colour(self, item=None):
         """Recolour one overlay. Reached from the button or a double-click."""
         if not isinstance(item, QtWidgets.QListWidgetItem):
+            # A QListWidget selects nothing of its own accord, so straight after
+            # adding a layer there is no current item and the button would do
+            # nothing at all. With only one layer the intent is not in doubt.
             item = self.ov_list.currentItem()
+            if item is None and self.ov_list.count() == 1:
+                item = self.ov_list.item(0)
+                self.ov_list.setCurrentItem(item)
         if item is None:
-            self.statusBar().showMessage("Select an overlay first", 4000)
+            QtWidgets.QMessageBox.information(
+                self, "Which overlay?",
+                "Select an overlay in the list first, or double-click one to "
+                "recolour it.")
             return
         layer = self.view.overlays.get(item.text())
         if layer is None:
