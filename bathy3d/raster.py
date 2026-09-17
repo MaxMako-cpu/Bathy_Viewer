@@ -105,7 +105,24 @@ class Surface:
         return (self.px * self.mx * self.step + self.py * self.my * self.step) / 2.0
 
     @property
+    def cell_x_m(self) -> float:
+        """Cell size east-west, metres."""
+        return self.px * self.mx
+
+    @property
+    def cell_y_m(self) -> float:
+        """Cell size north-south, metres.
+
+        Equal to :attr:`cell_x_m` on any UTM or other square-metre grid, but
+        not on a geographic one: at 27.5 N a 0.0001 degree cell is 9.88 m
+        across and 11.08 m tall, and treating it as square gets the slope
+        badly wrong.
+        """
+        return self.py * self.my
+
+    @property
     def native_cell_m(self) -> float:
+        """A single figure for labelling. Use the two axes for arithmetic."""
         return (self.px * self.mx + self.py * self.my) / 2.0
 
     @property
@@ -196,9 +213,10 @@ class Surface:
         if not np.all(np.isfinite(z)):
             return float("nan"), float("nan")
         nw, n, ne, ww, _c, ee, sw, ss, se = z
-        cell = self.native_cell_m * self.probe_step
-        dzdx = ((ne + 2 * ee + se) - (nw + 2 * ww + sw)) / (8.0 * cell)
-        dzdy = ((sw + 2 * ss + se) - (nw + 2 * n + ne)) / (8.0 * cell)
+        cell_x = self.cell_x_m * self.probe_step
+        cell_y = self.cell_y_m * self.probe_step
+        dzdx = ((ne + 2 * ee + se) - (nw + 2 * ww + sw)) / (8.0 * cell_x)
+        dzdy = ((sw + 2 * ss + se) - (nw + 2 * n + ne)) / (8.0 * cell_y)
         slope = math.degrees(math.atan(math.hypot(dzdx, dzdy)))
         if dzdx == 0.0 and dzdy == 0.0:
             return slope, float("nan")
@@ -232,8 +250,10 @@ class Surface:
         hr0, hr1 = max(0, r0 - 1), min(h, r1 + 1)
         hc0, hc1 = max(0, c0 - 1), min(w, c1 + 1)
         halo = self.z_probe[hr0:hr1, hc0:hc1]
-        cell = self.native_cell_m * self.probe_step
-        slope, aspect = horn_slope(halo, cell)
+        cell_x = self.cell_x_m * self.probe_step
+        cell_y = self.cell_y_m * self.probe_step
+        cell = (cell_x + cell_y) / 2.0
+        slope, aspect = horn_slope(halo, cell_x, cell_y)
         sr, sc = r0 - hr0, c0 - hc0
         z = halo[sr:sr + (r1 - r0), sc:sc + (c1 - c0)]
         slope = slope[sr:sr + (r1 - r0), sc:sc + (c1 - c0)]
@@ -460,19 +480,25 @@ class SlopePatch:
         return float((s > degrees).mean()) if s.size else float("nan")
 
 
-def horn_slope(z: np.ndarray, cell: float):
+def horn_slope(z: np.ndarray, cell_x: float, cell_y: float | None = None):
     """Slope and aspect by Horn's 8-neighbour method, in degrees.
 
     The weighted 3x3 that ArcGIS and GDAL use. A plain two-point central
     difference agrees with it on average but disagrees by up to ~10 degrees on
     the steep, noisy cells - which are the ones slope work is about.
+
+    The two cell sizes are separate because they are not always the same. On a
+    geographic grid a cell is wider than it is tall, and sharing one figure
+    between the axes turned a real 13.26 degree slope into 8.70.
     """
+    if cell_y is None:
+        cell_y = cell_x
     a = z.astype(np.float32, copy=False)
     p = np.pad(a, 1, mode="edge")
     dzdx = ((p[:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:]) -
-            (p[:-2, :-2] + 2 * p[1:-1, :-2] + p[2:, :-2])) / (8.0 * cell)
+            (p[:-2, :-2] + 2 * p[1:-1, :-2] + p[2:, :-2])) / (8.0 * cell_x)
     dzdy = ((p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) -
-            (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])) / (8.0 * cell)
+            (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])) / (8.0 * cell_y)
     slope = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
     # dzdy is built north-positive, so downslope bearing falls straight out.
     aspect = (np.degrees(np.arctan2(-dzdx, -dzdy)) + 360.0) % 360.0

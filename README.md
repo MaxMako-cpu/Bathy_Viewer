@@ -95,9 +95,23 @@ Two grids are held at once:
 Cells touching a nodata corner are hidden rather than draped over, so survey
 gaps read as holes instead of flat sheets.
 
-Geometry is built in **local metres** relative to the raster centre, so a
-geographic (degree) CRS works too — pixel spacing is converted at the centre
-latitude and distances fall back to geodesic. Vertical exaggeration is applied
+Geometry is built in **local metres** relative to the raster centre, so the
+projection does not matter. Verified on synthetic grids in UTM 15N, 16N, 31N,
+15S and 56S and in geographic WGS 84: cell size, depth, slope, latitude and
+longitude, distance, bearing, the slope box and nodata all come out right in
+each (`crs_test.py`). A geographic CRS works too — spacing is converted at the
+centre latitude and distances fall back to geodesic.
+
+The two cell sizes are kept **separate**, because they are not always equal: at
+27.5 N a 0.0001 degree cell is 9.88 m across and 11.08 m tall. Sharing one
+figure between the axes reported a real 13.26 degree slope as 8.70. Square-cell
+grids, which is every UTM, are unaffected either way.
+
+**The feeds are the part that is not CRS-aware.** Positions arrive as bare
+eastings and northings with nothing to say which zone they are in, and are read
+in the loaded grid's CRS. A UTM 15N easting is a perfectly valid UTM 16N
+easting, so a mismatch between the feed and the grid places vehicles somewhere
+plausible and wrong. The same applies to a shapefile with no `.prj`. Vertical exaggeration is applied
 as an actor scale, so it is instant even on a 6 M-cell mesh and the hillshade
 normals follow it.
 
@@ -124,6 +138,7 @@ prefs_test.py     restart checks: files, folders and settings remembered
 colour_test.py    colour checks: per-mode ramps, overlay colours, restart
 depth_test.py     five-body checks: both feeds, depths, TMS, tethers
 slopebox_test.py  slope box: native resolution, halo, picking, limits
+crs_test.py       other projections: UTM 16N/31N/15S/56S and geographic
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
