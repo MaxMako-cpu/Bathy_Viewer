@@ -139,9 +139,15 @@ for name in DEPTH_ORDER:
 
 vessel = tg["Vessel"]
 p = s.probe(vessel.x, vessel.y)
-check("vessel is not placed by the depth feed",
-      abs(vessel.z - p.z) < 1e-6 or abs(vessel.z) < 1e-9,
-      f"z {vessel.z:,.1f}")
+# A vessel floats. It sends no depth and is drawn at the surface, always -
+# there is no longer a setting that puts it on the bottom beneath itself.
+check("vessel sits at the sea surface", abs(vessel.z) < 1e-9,
+      f"z {vessel.z:,.3f}")
+check("and not on the seabed under it", abs(vessel.z - p.z) > 1.0,
+      f"seabed {p.z:,.1f}")
+check("the vessel's depth reads zero",
+      win.tgt_table.item(ORDER.index("Vessel"), 3).text() in ("0.0", "-0.0"),
+      win.tgt_table.item(ORDER.index("Vessel"), 3).text())
 
 print("\nheights relative to the seabed:")
 for name in DEPTH_ORDER:

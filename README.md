@@ -279,7 +279,7 @@ the feed and the grid must agree (UTM 15N for the BOEM file).
 
 | Body | Drawn as |
 | --- | --- |
-| Vessel | magenta dot, at the surface or on the bottom beneath itself |
+| Vessel | magenta dot, always at the sea surface |
 | ROV1 / ROV2 | red and green dots, at their reported depth |
 | TMS1 / TMS2 | darker red and green cylinders, 3 m × 2 m, at their depth |
 
@@ -292,9 +292,12 @@ bottom reads at a glance. The vessel has none — it floats over a kilometre and
 a half of water, so a line to the bottom says nothing and runs the height of
 the scene. Its umbilicals do the connecting instead.
 
-For the umbilicals to read correctly the vessel wants to be at the surface:
-turn on *Vessel at sea surface*, or it is drawn on the bottom beneath itself
-and its umbilicals run upward.
+The vessel is drawn at the surface, always. It sends no depth and has none, so
+there is nothing to place it by, and the alternative — putting it on the bottom
+beneath itself — drew it a kilometre and a half below where it was and ran its
+umbilicals upward out of the TMS. It still has to be *on* the grid: a position
+outside it means the feed and the grid disagree about the zone, and a vessel
+placed 2700 km away takes the camera with it, so it reads `off grid` instead.
 
 The two feeds are independent and carry no timestamps, so there is no honest
 way to time-align them. Each vehicle keeps its latest position and its latest
@@ -532,6 +535,6 @@ the grid's seabed with the altitude at zero.
 - No contour overlay yet, and no depth-profile plot along the measured line.
 - Shapefile polygons are drawn as outlines, not filled.
 - Neither feed carries heading, so no marker has an orientation.
-- The vessel has no depth of its own; it sits at the surface or on the bottom.
+- The vessel has no depth of its own; it is always drawn at the surface.
 - Depth calibration corrects the vehicles, never the grid or the overlays
   draped on it, and only the smooth part of the grid's error.

@@ -556,15 +556,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "their own depth, each on a dotted tether to its ROV.")
         self.tms_b.toggled.connect(self._tms_toggled)
         tl.addWidget(self.tms_b)
-        self.surf_b = QtWidgets.QPushButton("Vessel at sea surface")
-        self.surf_b.setCheckable(True)
-        self.surf_b.setChecked(False)
-        # Without this the trail keeps the points from the other height and
-        # draws a kilometre-high spike between the surface and the seabed.
-        self.surf_b.toggled.connect(
-            lambda _on: (self.view.targets.clear_trail("Vessel"),
-                         self.view.plotter.render()))
-        tl.addWidget(self.surf_b)
         self.zoom_b = QtWidgets.QPushButton("Zoom to targets")
         self.zoom_b.clicked.connect(self.zoom_to_targets)
         tl.addWidget(self.zoom_b)
@@ -1485,7 +1476,6 @@ class MainWindow(QtWidgets.QMainWindow):
             e, n = en
             p = s.probe(e, n)
             seabed = None if p is None else -p.z
-            surface_vessel = nm == "Vessel" and self.surf_b.isChecked()
 
             depth, age = self._depths.get(nm, (None, 0.0))
             fresh = depth is not None and (now - age) < DEPTH_STALE_AFTER
@@ -1496,10 +1486,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 far = self.calib.model.outside(depth)
                 depth = self.calib.apply(depth)
             if nm == "Vessel":
-                # No depth is sent for the vessel; it is at the surface or,
-                # by preference, drawn on the bottom beneath itself.
-                z = 0.0 if surface_vessel else (None if p is None else p.z)
-                shown, alt = (0.0 if surface_vessel else seabed), None
+                # A vessel floats, so it is drawn at the surface - always. It
+                # sends no depth and has none; drawing it on the bottom put it
+                # a kilometre and a half below where it was, and ran its
+                # umbilicals upward out of the TMS.
+                #
+                # It still needs to be *on* the grid, though its depth no
+                # longer comes from there. A position outside it means the
+                # feed and the grid disagree about the zone, and a vessel
+                # placed 2700 km away would take the camera with it.
+                z, shown, alt = (None if p is None else 0.0), 0.0, None
             elif fresh:
                 z, shown = -depth, depth
                 alt = None if seabed is None else seabed - depth
@@ -1641,8 +1637,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 p = s.probe(x, y)
                 if p is None:
                     continue
-                z = 0.0 if (name == "Vessel" and self.surf_b.isChecked()) else p.z
-                self.view.targets.update(name, x, y, z)
+                self.view.targets.update(
+                    name, x, y, 0.0 if name == "Vessel" else p.z)
             self.view.plotter.render()
 
         self._demo = QtCore.QTimer(self)
