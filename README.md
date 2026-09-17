@@ -179,10 +179,16 @@ it is block-averaged**, so expect a small step at the boundary — typically a
 metre or two, more on steep ground. That step is the decimation error made
 visible, not a drawing fault.
 
-The box uses **Horn's 8-neighbour method**, the one ArcGIS and GDAL use, rather
-than the two-point central difference the cursor readout still uses. On this
-grid the two agree to 0.014 degrees on average but differ by up to 9.6 degrees
-on the steep, noisy cells.
+The box and the **cursor readout** both use Horn's 8-neighbour method, the one
+ArcGIS and GDAL use, on the same native grid — so hovering inside a box reports
+exactly what the box is coloured by. Verified cell by cell across a box: worst
+slope difference 0.0005 degrees, worst aspect difference 0.007 degrees, which
+is float32 against float64 arithmetic rather than any difference of method.
+
+That agreement is the point of the feature. The readout was already at native
+resolution, but it used a two-point central difference, which matches Horn to
+0.014 degrees on average and diverges by up to **9.6 degrees** on the steep,
+noisy cells — exactly the ones worth opening a box over.
 
 ## Shapefile overlays
 

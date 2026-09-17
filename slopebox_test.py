@@ -104,6 +104,32 @@ edge_same = np.allclose(sl2[0][np.isfinite(sl2[0])],
                         p.slope[0][np.isfinite(p.slope[0])], atol=1e-4)
 check("edge cells use the halo, not a padded edge", not edge_same)
 
+# The point of the box is a more precise reading, so hovering inside it must
+# report what the box says - same method, same data, same number.
+print("\nthe cursor readout agrees with the box:")
+worst_s = worst_a = 0.0
+n = 0
+for rr in range(1, p.shape[0] - 1):
+    for cc in range(1, p.shape[1] - 1):
+        x_, y_ = s.crs_from_rowcol(p.row0 + rr, p.col0 + cc)
+        pr = s.probe(x_, y_)
+        want = p.slope[rr, cc]
+        if pr is None or not np.isfinite(want):
+            continue
+        n += 1
+        worst_s = max(worst_s, abs(pr.slope - float(want)))
+        wa = p.aspect[rr, cc]
+        if np.isfinite(wa) and np.isfinite(pr.aspect):
+            d = abs(pr.aspect - float(wa)) % 360.0
+            worst_a = max(worst_a, min(d, 360.0 - d))
+print(f"  compared {n} cells")
+# Not bit-exact: the patch computes in float32 to keep a large box cheap,
+# the readout in float64. Anything above this would be a method difference.
+check("cursor slope matches the box", worst_s < 0.02,
+      f"worst difference {worst_s:.6f} deg")
+check("cursor aspect matches the box", worst_a < 0.05,
+      f"worst difference {worst_a:.6f} deg")
+
 print("\ndrawing:")
 actors = win.view.plotter.renderer.actors
 check("patch mesh drawn", "patch" in actors, str([a for a in actors if "patch" in a]))
