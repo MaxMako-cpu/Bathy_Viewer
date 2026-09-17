@@ -11,7 +11,7 @@ import numpy as np
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import raster
+from . import calib, raster
 from .feed import (DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
@@ -126,6 +126,92 @@ class Loader(QtCore.QThread):
             self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
 
 
+class CalibDialog(QtWidgets.QDialog):
+    """The tie-in points, what they add up to, and a way to drop a bad one.
+
+    Modeless on purpose: it is read while the vehicles are moving, and a modal
+    box over a live plot during a deployment is the wrong thing entirely.
+    """
+
+    COLS = ["Vehicle", "Easting", "Northing", "Grid m", "Feed m", "Out by m",
+            "Residual m", "When"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Depth calibration - tie-in points")
+        self.setModal(False)
+        self.resize(760, 380)
+
+        v = QtWidgets.QVBoxLayout(self)
+        self.summary = QtWidgets.QLabel()
+        self.summary.setWordWrap(True)
+        self.summary.setObjectName("hint")
+        v.addWidget(self.summary)
+
+        self.table = QtWidgets.QTableWidget(0, len(self.COLS), self)
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeToContents)
+        v.addWidget(self.table, 1)
+
+        row = QtWidgets.QHBoxLayout()
+        self.del_b = QtWidgets.QPushButton("Delete selected")
+        self.del_b.setToolTip(
+            "Drop a tie-in taken when the vehicle was not really on bottom - "
+            "one bad point drags the whole fit with it.")
+        self.del_b.clicked.connect(self._delete)
+        row.addWidget(self.del_b)
+        row.addStretch(1)
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(self.hide)
+        row.addWidget(close)
+        v.addLayout(row)
+
+    def refresh(self):
+        c = self.win.calib
+        m = c.model
+        state = ("applied to every vehicle depth" if c.active
+                 else "not applied - switch it on in the Calibration menu"
+                 if m.on else "nothing to apply yet")
+        self.summary.setText(f"{m.describe()}\nCurrently {state}.")
+
+        # Residual is per-point and only exists once a model is fitted.
+        self.table.setRowCount(len(c.points))
+        for r, p in enumerate(c.points):
+            resid = (p.grid_depth - m.apply(p.feed_depth)) if m.on else None
+            when = time.strftime("%d %b %H:%M", time.localtime(p.when))
+            cells = [p.vehicle, f"{p.x:,.2f}", f"{p.y:,.2f}",
+                     f"{p.grid_depth:,.1f}", f"{p.feed_depth:,.1f}",
+                     f"{p.offset:+.1f}",
+                     "--" if resid is None else f"{resid:+.1f}", when]
+            for col, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if col:
+                    item.setTextAlignment(QtCore.Qt.AlignRight
+                                          | QtCore.Qt.AlignVCenter)
+                else:
+                    item.setForeground(QtGui.QColor(
+                        DEFAULT_TARGETS.get(p.vehicle, {}).get("color", "#e3eef1")))
+                # A point sitting far off its own fit is the one to suspect.
+                if col == 6 and resid is not None and abs(resid) > 5.0:
+                    item.setForeground(QtGui.QColor("#e8663d"))
+                self.table.setItem(r, col, item)
+        self.del_b.setEnabled(bool(c.points))
+
+    def _delete(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()},
+                      reverse=True)
+        if not rows:
+            return
+        for r in rows:
+            self.win.calib.remove(r)
+        self.win._after_calib_change()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, path: str | None = None):
         super().__init__()
@@ -154,6 +240,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._framed_feed = None
         self._ramp_choice = {}
         self._patch = None
+        # Built before the menu, which needs it to set the checkbox state.
+        self.calib = calib.Calibration(prefs.view("calib/on"))
+        self.calib.load(prefs.tiepoints())
+        self._calib_dialog = None
         self._build_controls()
         self._build_readout()
         self._build_menu()
@@ -649,6 +739,166 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_demo.setCheckable(True)
         self.act_demo.toggled.connect(self.toggle_demo_targets)
 
+        self._build_calib_menu()
+
+    def _build_calib_menu(self):
+        """Tie the depth feed to the grid. Off until asked for.
+
+        A vehicle's depth and the grid's depth are separate conversions from
+        separate measurements, so they disagree by tens of metres on a
+        regional grid. Pressing *Tie in* while a vehicle is on the bottom
+        records that disagreement; the correction is fitted from the tie-ins.
+        """
+        cm = self.menuBar().addMenu("&Calibration")
+        self.act_calib = cm.addAction("&Apply depth calibration")
+        self.act_calib.setCheckable(True)
+        self.act_calib.setChecked(self.calib.enabled)
+        self.act_calib.setToolTip(
+            "Correct every vehicle depth using the tie-in points. "
+            "Off draws the feed exactly as it arrives.")
+        self.act_calib.toggled.connect(self._calib_toggled)
+        cm.addSeparator()
+
+        # One entry per vehicle that carries a depth. The vessel has none.
+        self.act_tie = {}
+        for nm in DEPTH_ORDER:
+            act = cm.addAction(f"Tie in {nm} (on bottom now)")
+            act.setToolTip(
+                f"Record what the grid and the feed each say at {nm}'s "
+                "position right now. Press only when it is on the bottom.")
+            act.triggered.connect(lambda _=False, n=nm: self.tie_in(n))
+            self.act_tie[nm] = act
+        cm.addSeparator()
+        cm.addAction("Tie-in &points…").triggered.connect(self.show_calib)
+        self.act_calib_clear = cm.addAction("Clear all tie-in points")
+        self.act_calib_clear.triggered.connect(self.clear_tiepoints)
+        self._sync_calib_menu()
+
+    def _sync_calib_menu(self):
+        """Grey out what cannot be done yet, and say why in the tooltip."""
+        fitted = self.calib.model.on
+        self.act_calib.setEnabled(fitted)
+        if not fitted:
+            self.act_calib.setToolTip(
+                "No tie-in points yet - tie in a vehicle on the bottom first.")
+            # Remembered as on, but the points that made it are gone: a ticked
+            # switch that corrects nothing is worse than an unticked one.
+            if self.act_calib.isChecked():
+                self.act_calib.setChecked(False)
+        self.act_calib_clear.setEnabled(bool(self.calib.points))
+        self._mark_depth_column()
+
+    # ----------------------------------------------------------- calibration
+
+    def _calib_toggled(self, on):
+        self.calib.enabled = bool(on)
+        prefs.set_view("calib/on", self.calib.enabled)
+        self._mark_depth_column()
+        self.statusBar().showMessage(
+            self.calib.model.describe() if self.calib.active
+            else "Calibration off - depths drawn exactly as the feed sends them.",
+            10000)
+        self._place_targets()
+
+    def tie_in(self, name: str):
+        """Record grid depth against feed depth for a vehicle on the bottom.
+
+        The raw feed depth is stored, never a corrected one - otherwise
+        tie-ins taken with calibration switched on would be measuring the
+        correction instead of the error, and each one would fold the previous
+        ones in again.
+        """
+        s = self.view.surface
+        if s is None:
+            QtWidgets.QMessageBox.information(
+                self, "No grid", "Open a grid before tying in - the tie-in "
+                "records what the grid says at the vehicle's position.")
+            return
+        en = self._positions.get(name)
+        if en is None:
+            QtWidgets.QMessageBox.information(
+                self, "No position",
+                f"No position has arrived for {name} yet.")
+            return
+        raw = self._depths.get(name)
+        if raw is None or (time.monotonic() - raw[1]) >= DEPTH_STALE_AFTER:
+            QtWidgets.QMessageBox.information(
+                self, "No live depth",
+                f"{name} has no depth newer than {DEPTH_STALE_AFTER:.0f} s. "
+                "A tie-in has to pair a position and a depth from the same "
+                "moment, so the depth feed must be running.")
+            return
+        e, n = en
+        p = s.probe(e, n)
+        if p is None or not math.isfinite(p.z):
+            QtWidgets.QMessageBox.information(
+                self, "Off grid",
+                f"{name} is outside the grid, or over a nodata gap, so there "
+                "is no grid depth to tie to.")
+            return
+
+        pt = calib.TiePoint(vehicle=name, x=float(e), y=float(n),
+                            grid_depth=float(-p.z), feed_depth=float(raw[0]),
+                            grid=self._path or "")
+        self.calib.add(pt)
+        self._save_tiepoints()
+        self._sync_calib_menu()
+        if self._calib_dialog is not None:
+            self._calib_dialog.refresh()
+        self.statusBar().showMessage(
+            f"Tied in {name}: grid {pt.grid_depth:,.1f} m, feed "
+            f"{pt.feed_depth:,.1f} m, out by {pt.offset:+.1f} m.  "
+            + self.calib.model.describe(), 20000)
+        self._place_targets()
+
+    def show_calib(self):
+        if self._calib_dialog is None:
+            self._calib_dialog = CalibDialog(self)
+        self._calib_dialog.refresh()
+        self._calib_dialog.show()
+        self._calib_dialog.raise_()
+        self._calib_dialog.activateWindow()
+
+    def clear_tiepoints(self):
+        if not self.calib.points:
+            return
+        if QtWidgets.QMessageBox.question(
+                self, "Clear tie-in points",
+                f"Discard all {len(self.calib.points)} tie-in points?"
+                ) != QtWidgets.QMessageBox.Yes:
+            return
+        self.calib.clear()
+        self._after_calib_change()
+
+    def _after_calib_change(self):
+        """Everything that has to follow a change to the points."""
+        self._save_tiepoints()
+        if not self.calib.model.on and self.act_calib.isChecked():
+            # Nothing left to apply: untick rather than leave a switch that
+            # claims to be doing something.
+            self.act_calib.setChecked(False)
+        self._sync_calib_menu()
+        self._mark_depth_column()
+        if self._calib_dialog is not None:
+            self._calib_dialog.refresh()
+        self._place_targets()
+
+    def _save_tiepoints(self):
+        try:
+            prefs.set_tiepoints(self.calib.encode())
+        except Exception:
+            pass
+
+    def _mark_depth_column(self):
+        """Say in the table header when the depths shown are corrected."""
+        head = self.tgt_table.horizontalHeaderItem(3)
+        if head is None:
+            return
+        on = self.calib.active
+        head.setText("Depth*" if on else "Depth")
+        head.setToolTip(self.calib.model.describe() if on
+                        else "Depth exactly as the feed sends it.")
+
     # ------------------------------------------------------------- file open
 
     def open_dialog(self):
@@ -1055,6 +1305,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
             depth, age = self._depths.get(nm, (None, 0.0))
             fresh = depth is not None and (now - age) < DEPTH_STALE_AFTER
+            # Correct before anything is derived from it, so the marker, the
+            # drop line, the altitude and the table all agree on one depth.
+            far = False
+            if fresh and self.calib.active:
+                far = self.calib.model.outside(depth)
+                depth = self.calib.apply(depth)
             if nm == "Vessel":
                 # No depth is sent for the vessel; it is at the surface or,
                 # by preference, drawn on the bottom beneath itself.
@@ -1074,7 +1330,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tgt = self.view.targets.update(nm, e, n, z)
             if not fresh and nm in DEPTH_ORDER:
                 self.view.targets.mark_stale(nm)
-            self._set_row(r, e, n, shown, "0 s", tgt.speed, alt)
+            self._set_row(r, e, n, shown, "0 s", tgt.speed, alt, far)
 
         self.view.targets.draw_links(TETHERS)
         self.view.targets.draw_links(UMBILICALS)
@@ -1086,10 +1342,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view.follow_targets()
         self.view.plotter.render()
 
-    def _set_row(self, r, e, n, depth, age, speed=None, alt=None):
+    def _set_row(self, r, e, n, depth, age, speed=None, alt=None, far=False):
         self.tgt_table.item(r, 1).setText(f"{e:,.2f}")
         self.tgt_table.item(r, 2).setText(f"{n:,.2f}")
-        self.tgt_table.item(r, 3).setText("--" if depth is None else f"{depth:,.1f}")
+        dcell = self.tgt_table.item(r, 3)
+        dcell.setText("--" if depth is None else f"{depth:,.1f}")
+        # Amber where the vehicle has gone outside the depths anything was
+        # tied in at: the correction there is an extrapolation, not a fit.
+        dcell.setForeground(QtGui.QColor("#e0a33a" if far else "#e3eef1"))
+        dcell.setToolTip(
+            "Outside the depth range of the tie-in points - the calibration "
+            "is extrapolating here." if far else "")
         cell = self.tgt_table.item(r, 4)
         if alt is None or not math.isfinite(alt):
             cell.setText("--")

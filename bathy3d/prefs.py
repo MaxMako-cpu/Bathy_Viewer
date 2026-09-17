@@ -106,6 +106,23 @@ def set_last_dir(kind: str, path: str) -> None:
         set_value(f"dirs/{kind}", d)
 
 
+def tiepoints() -> list:
+    """Encoded depth-calibration tie-ins, newest last.
+
+    Kept as flat strings so a hand-edited or older-version entry costs one row
+    rather than the whole set - :meth:`calib.TiePoint.decode` drops what it
+    cannot read.
+    """
+    v = settings().value("calib/points", [])
+    if isinstance(v, str):
+        v = [v]
+    return [str(x) for x in (v or []) if x]
+
+
+def set_tiepoints(rows) -> None:
+    set_value("calib/points", [str(r) for r in rows])
+
+
 def restore_on_start() -> bool:
     return _get("session/restore", True, bool)
 
@@ -138,6 +155,9 @@ VIEW = {
     "feed/port": (6451, int),
     "feed/depth_port": (6452, int),
     "view/show_tms": (True, bool),
+    # Off until the operator has tied in and decided it works. A correction
+    # applied without being asked for would silently move every vehicle.
+    "calib/on": (False, bool),
 }
 
 

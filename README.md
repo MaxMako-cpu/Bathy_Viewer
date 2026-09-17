@@ -139,6 +139,7 @@ colour_test.py    colour checks: per-mode ramps, overlay colours, restart
 depth_test.py     five-body checks: both feeds, depths, TMS, tethers
 slopebox_test.py  slope box: native resolution, halo, picking, limits
 crs_test.py       other projections: UTM 16N/31N/15S/56S and geographic
+calib_test.py     depth calibration: the fit, then tie-ins through the window
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -146,6 +147,7 @@ bathy3d/
   targets.py      vessel / ROV markers, trails, drop lines
   feed.py         UDP listener + record parser
   vectors.py      shapefile reader; reproject, densify, drape
+  calib.py        depth tie-in points and the correction fitted to them
   prefs.py        what is remembered between runs
   ramps.py        colour ramps
   mainwindow.py   PySide6 window, panels, menus, loader thread
@@ -162,6 +164,10 @@ Files that have moved or been deleted are skipped rather than reported as
 errors. **File › Forget remembered files** clears the grid and overlays so the
 next start opens empty; the remembered folders survive that. Passing a grid on
 the command line takes precedence over the remembered one.
+
+Depth calibration tie-in points come back too, along with whether the
+correction was switched on — though a remembered "on" with no points left
+unticks itself rather than showing a switch that corrects nothing.
 
 Settings live in QSettings — the registry on Windows — so there is no file to
 mislay. Setting `BATHY3D_PROFILE` puts a run in its own settings profile; every
@@ -359,6 +365,78 @@ changing.
 bathy3d.feed 6452` the depth feed, printing each datagram and what it decoded
 to. Use `-u` or Python buffers the output and it looks dead.
 
+## Depth calibration
+
+A vehicle sitting on the bottom draws well clear of a preplot draped on the
+same spot. That is not a drawing fault — the two get their depth from
+unrelated places:
+
+| | Where its depth comes from |
+| --- | --- |
+| Preplot / overlay | X and Y only; the depth is looked up from **the grid** |
+| Vehicle | `-depth` straight from **the pressure feed** |
+
+Neither number is a measurement of the seabed. The grid's is a conversion from
+seismic two-way time through an assumed sound velocity; the vehicle's is a
+conversion from pressure through an assumed water density. On the BOEM grid
+they disagree by tens of metres, and vertical exaggeration multiplies whatever
+gap is left — at the default 6x a real 4 m gap draws as 24 m.
+
+**Calibration › Tie in \<vehicle\>** records one moment when the vehicle was
+certainly on the bottom: what the grid said, what the feed said, and where.
+The difference is the error, there, at that depth. **Apply depth calibration**
+switches the correction on; it starts off and stays off until asked, because a
+correction applied unbidden silently moves every vehicle.
+
+### Why one tie-in is not enough
+
+The error is usually a **percentage**, not a fixed number of metres. A 2.4%
+velocity difference is 21 m at 900 m and 59 m at 2450 m — and this grid spans
+886 m to 2459 m. Tie in once at 1600 m and sail to the shallow edge and you
+have swapped one wrong picture for another.
+
+So the correction is fitted, not stored flat:
+
+* **One point** — a fixed offset, and the dialog says it only fixes its own
+  depth.
+* **Two or more spread over 200 m of depth** — a line through them:
+  `corrected = a + b x feed`. The part that does not change with depth (`a`)
+  is a datum or sensor-zero difference; the part that grows with it (`b`) is
+  velocity. The fit separates them without anyone deciding which is which.
+* **Two or more that are *not* spread** — a plain average offset, and it says
+  why. Points 15 m apart in depth carry no slope information; dividing their
+  difference in offsets by a tiny difference in depth turns centimetres of
+  noise into a wild percentage.
+
+Three guards, because this is a correction applied to live positions:
+
+* A fitted scale beyond **15%** is refused and the average offset used. A
+  sound-velocity assumption is not 15% wrong; a fit that says so is being
+  driven by a tie-in taken while the vehicle was still flying.
+* **Two points always fit a line exactly**, whatever the data, so no scatter
+  is reported until the third. From three on, the scatter is the part of the
+  grid's error that is *not* smooth — a metre or two means the correction
+  holds across the grid, fifteen means the grid is lumpy here and no offset or
+  scale will save it.
+* Outside the depth range anything was tied in at, the correction is
+  extrapolating. The **Depth** column turns amber and says so.
+
+**Calibration › Tie-in points…** lists every point with its position, the two
+depths, the difference, and its residual against the fit — a point far off its
+own line turns red, and that is the one to suspect. Delete it and the fit
+follows. Clearing the last point unticks the switch.
+
+When the correction is on, the table header reads **Depth\*** and its tooltip
+gives the model. The corrected depth drives everything — marker, drop line,
+altitude and table — so they cannot disagree.
+
+Two things it does not do. It corrects the smooth, predictable part of the
+error only: where the grid is simply wrong about the *shape* of the ground, a
+canyon it smoothed over, no offset or scale helps. And it does not touch the
+overlays — a preplot stays on the grid, because the grid is what it was draped
+on. Calibration moves the vehicle onto the grid's seabed, not the seabed onto
+the vehicle.
+
 ## Testing
 
 ```
@@ -380,6 +458,16 @@ then brings the real window up, starts the real listener, fires real datagrams
 at it over loopback on port 6471, and checks the dots land on the reported
 coordinates at the right seabed depth in the right colours.
 
+
+```
+C:\Users\<you>\.venvs\bathy3d\Scripts\python.exe calib_test.py
+```
+
+Drives the fit as plain arithmetic — one point, a spread pair, a cramped pair,
+an impossible scale, scatter from three — then ties in a vehicle through the
+real window at two sites 752 m apart in depth and checks the marker lands on
+the grid's seabed with the altitude at zero.
+
 ## Known limits
 
 - Rotated / sheared rasters are rejected — reproject north-up first.
@@ -388,4 +476,5 @@ coordinates at the right seabed depth in the right colours.
 - Shapefile polygons are drawn as outlines, not filled.
 - Neither feed carries heading, so no marker has an orientation.
 - The vessel has no depth of its own; it sits at the surface or on the bottom.
-- No auto-follow: the camera does not track the vehicles as they move.
+- Depth calibration corrects the vehicles, never the grid or the overlays
+  draped on it, and only the smooth part of the grid's error.
