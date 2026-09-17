@@ -89,6 +89,40 @@ check("forgetting stops the reopen", w3.view.surface is None)
 check("but folders are still remembered", prefs.last_dir("shp") == APP)
 w3.close(); pump(200)
 
+# The readout rail scrolls, so a short window still reaches the bottom of it,
+# and a width dragged by hand outlives the session that chose it.
+w4 = MainWindow(None); w4.resize(1300, 700); w4.show(); pump(700)
+sa = w4.dock_readout.widget()
+check("the readout rail is a scroll area",
+      isinstance(sa, QtWidgets.QScrollArea), type(sa).__name__)
+check("and resizes its contents", sa.widgetResizable())
+check("its content is taller than a 700px window, so it really has to scroll",
+      sa.verticalScrollBar().maximum() > 0,
+      f"{sa.widget().sizeHint().height()}px of content, "
+      f"{sa.viewport().height()}px of viewport")
+sa.verticalScrollBar().setValue(sa.verticalScrollBar().maximum())
+pump(150)
+check("and scrolls to the bottom",
+      sa.verticalScrollBar().value() == sa.verticalScrollBar().maximum())
+
+check("it opens wide enough for the measured line",
+      w4.dock_readout.width() == 430, str(w4.dock_readout.width()))
+check("but can be dragged narrower than that",
+      w4.dock_readout.minimumWidth() < 430,
+      f"floor {w4.dock_readout.minimumWidth()}px")
+w4.resizeDocks([w4.dock_readout], [540], QtCore.Qt.Horizontal)
+pump(300)
+check("a rail can be widened", w4.dock_readout.width() == 540,
+      str(w4.dock_readout.width()))
+w4.close(); pump(300)
+
+w5 = MainWindow(None); w5.resize(1300, 700); w5.show(); pump(800)
+check("the chosen width comes back next run", w5.dock_readout.width() == 540,
+      str(w5.dock_readout.width()))
+check("and both rails are still visible",
+      w5.dock_controls.isVisible() and w5.dock_readout.isVisible())
+w5.close(); pump(200)
+
 # a vanished file must not break startup
 prefs.set_last_grid(r"C:\nope\missing.tif")
 prefs.set_overlays([(r"C:\nope\gone.shp", "#ffffff")])

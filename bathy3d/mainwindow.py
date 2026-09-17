@@ -453,11 +453,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.restoreGeometry(geo)
             except Exception:
                 pass
+        # The readout rail opens wide enough for the measured line's six
+        # columns. Done before restoring the saved layout so that a width the
+        # operator chose themselves wins over this default.
+        self.resizeDocks([self.dock_readout], [430], QtCore.Qt.Horizontal)
+        state = prefs.dock_state()
+        if state is not None:
+            try:
+                self.restoreState(state)
+            except Exception:
+                pass
+        # A saved layout from an older build can name docks this one no longer
+        # has, which leaves the survivors hidden. Nothing here is closeable by
+        # design, so put them back rather than starting with a blank window.
+        for d in (self.dock_controls, self.dock_readout):
+            d.setVisible(True)
 
     # ------------------------------------------------------------- left rail
 
     def _build_controls(self):
         dock = QtWidgets.QDockWidget("Controls", self)
+        dock.setObjectName("dock_controls")   # saveState needs a stable name
         dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
@@ -684,6 +700,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_readout(self):
         dock = QtWidgets.QDockWidget("Readout", self)
+        dock.setObjectName("dock_readout")    # saveState needs a stable name
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
         v.setContentsMargins(10, 10, 10, 10)
@@ -824,13 +841,24 @@ class MainWindow(QtWidgets.QMainWindow):
         v.addWidget(lg)
         v.addStretch(1)
 
-        dock.setWidget(w)
-        # Wide enough for the measured line's six columns at their larger type
-        # without truncating a distance, which is the widest thing this rail
-        # has to carry. Measured: the columns need 352px, the group box and
-        # dock margins take about 60 more, and a leg on a 130 km grid runs to
-        # one digit wider than anything in the test line.
-        dock.setMinimumWidth(430)
+        # Scrolls, like the controls rail. Four groups deep - cursor, measured
+        # line, slope box, live positions - is taller than a laptop screen, and
+        # without this the bottom of it simply cannot be reached.
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(w)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        # Unlike the controls rail this one keeps its horizontal bar, because
+        # the measured line is deliberately wider than the narrowest the rail
+        # can be dragged to. Drag it narrow and you scroll across rather than
+        # losing the right-hand columns.
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        dock.setWidget(scroll)
+        # The measured line wants 430px to show six columns of larger type
+        # without truncating a distance, and that is what the rail opens at -
+        # but it is a preference, not a floor. Anyone who would rather have the
+        # 3D view can drag it down to here and scroll.
+        dock.setMinimumWidth(300)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         self.dock_readout = dock
 
@@ -1756,6 +1784,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _save_prefs(self):
         try:
             prefs.set_geometry(self.saveGeometry())
+            prefs.set_dock_state(self.saveState())
             prefs.set_view("view/ve", self.ve_s.value() / 10.0)
             prefs.set_view("view/sun_az", self.az_s.value())
             prefs.set_view("view/sun_alt", self.al_s.value())

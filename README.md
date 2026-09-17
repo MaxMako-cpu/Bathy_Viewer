@@ -104,11 +104,11 @@ off the screen and written down, often at arm's length from the console. The
 Live positions table keeps the compact size — it has seven columns and is
 glanced at, not transcribed. Its columns are sized to their contents rather
 than stretched to fill: six columns of 15px type divided evenly across the old
-286px rail truncated `4,940` to `4,9…` and chopped the header with it, so the
-right-hand rail is now 430px wide, which fits the widest leg a 130 km grid can
-produce. Spare width goes to the distance column, not the last one — stretching
-the last opened a gap between the degrees and the compass point that are meant
-to read as one thing.
+300px rail truncated `4,940` to `4,9…` and chopped the header with it, so the
+rail now opens at 430px, which fits the widest leg a 130 km grid can produce.
+Spare width goes to the distance column, not the last one — stretching the last
+opened a gap between the degrees and the compass point that are meant to read
+as one thing.
 
 ## How it reads the grid
 
@@ -194,6 +194,13 @@ Files that have moved or been deleted are skipped rather than reported as
 errors. **File › Forget remembered files** clears the grid and overlays so the
 next start opens empty; the remembered folders survive that. Passing a grid on
 the command line takes precedence over the remembered one.
+
+Both rails scroll, so a short window still reaches the bottom of them, and the
+width you drag a rail to comes back next run along with the window's own size
+and position. The readout rail opens at 430px — wide enough for the measured
+line's six columns — but that is a preference, not a floor: drag it down to
+300px if you would rather have the 3D view, and it scrolls across instead of
+losing the right-hand columns.
 
 Vehicle names and colours come back, and so do depth calibration tie-in
 points, along with whether the correction was switched on — though a

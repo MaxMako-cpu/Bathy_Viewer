@@ -188,3 +188,16 @@ def geometry():
 
 def set_geometry(data) -> None:
     set_value("win/geometry", data)
+
+
+def dock_state():
+    """Dock widths and positions, from QMainWindow.saveState.
+
+    Separate from the geometry, which is only the window's own frame - a rail
+    dragged wider stays wider only if this comes back too.
+    """
+    return settings().value("win/docks")
+
+
+def set_dock_state(data) -> None:
+    set_value("win/docks", data)
