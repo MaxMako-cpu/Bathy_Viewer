@@ -43,13 +43,13 @@ def check(name, cond, detail=""):
 
 
 # Real positions from the survey PC, with the two TMS pairs appended in
-# sequence as agreed: Vessel, UHD333, UHD334, TMS333, TMS334.
+# sequence as agreed: Vessel, ROV1, ROV2, TMS1, TMS2.
 BASE = [706148.701, 3006428.410,      # Vessel
-        705939.201, 3006546.099,      # UHD333
-        706515.275, 3006391.404,      # UHD334
-        705941.900, 3006549.300,      # TMS333
-        706512.600, 3006388.100]      # TMS334
-# Real depths, read off the survey PC: UHD333, UHD334, TMS333, TMS334.
+        705939.201, 3006546.099,      # ROV1
+        706515.275, 3006391.404,      # ROV2
+        705941.900, 3006549.300,      # TMS1
+        706512.600, 3006388.100]      # TMS2
+# Real depths, read off the survey PC: ROV1, ROV2, TMS1, TMS2.
 DEPTHS = [1656.082, 1646.926, 1492.150, 1508.260]
 
 
@@ -62,8 +62,8 @@ fixes, _ = parse_records(rec(BASE), stream=False)
 check("position record is 10 fields", POSITION_FIELDS == 10, str(POSITION_FIELDS))
 check("five bodies decoded", len(fixes) == 1 and len(fixes[0].pos) == 5,
       str(list(fixes[0].pos) if fixes else []))
-check("TMS333 read from the right pair",
-      fixes[0].pos["TMS333"] == (BASE[6], BASE[7]), str(fixes[0].pos.get("TMS333")))
+check("TMS1 read from the right pair",
+      fixes[0].pos["TMS1"] == (BASE[6], BASE[7]), str(fixes[0].pos.get("TMS1")))
 
 dfx, _ = parse_depths(rec(DEPTHS), stream=False)
 check("depth record is 4 fields", DEPTH_FIELDS == 4, str(DEPTH_FIELDS))
@@ -155,7 +155,7 @@ for rov, tms in TETHERS.items():
           f"{tg[tms].z:,.1f} vs {tg[rov].z:,.1f}")
 
 print("\nTMS bodies and tethers:")
-for name in ("TMS333", "TMS334"):
+for name in ("TMS1", "TMS2"):
     check(f"{name} is a cylinder", tg[name].kind == "cylinder", tg[name].kind)
 check("TMS is 3 m across and 2 m tall",
       TMS_DIAMETER_M == 3.0 and TMS_HEIGHT_M == 2.0)
@@ -172,7 +172,7 @@ check("no drop line hanging off the vessel",
 
 win.tms_b.setChecked(False)
 pump(300)
-vis = actors.get("tgt:TMS333")
+vis = actors.get("tgt:TMS1")
 check("hiding TMS hides the cylinder", vis is not None and not vis.GetVisibility())
 check("hiding TMS removes tethers and umbilicals",
       not any(a.startswith("link") for a in win.view.plotter.renderer.actors),
@@ -180,23 +180,23 @@ check("hiding TMS removes tethers and umbilicals",
 win.tms_b.setChecked(True)
 pump(300)
 check("showing TMS brings them back",
-      actors.get("tgt:TMS333").GetVisibility()
+      actors.get("tgt:TMS1").GetVisibility()
       and any(a.startswith("link") for a in win.view.plotter.renderer.actors))
 
 print("\nwhen the depth feed stops:")
 row = {win.tgt_table.item(r, 0).text(): r for r in range(win.tgt_table.rowCount())}
-before = tg["UHD333"].z
-win._depths["UHD333"] = (win._depths["UHD333"][0], time.monotonic() - 99)
+before = tg["ROV1"].z
+win._depths["ROV1"] = (win._depths["ROV1"][0], time.monotonic() - 99)
 sock.sendto(rec(BASE).encode(), ("127.0.0.1", PPORT))
 for _ in range(40):
     pump(80)
-    if abs(tg["UHD333"].z - before) > 1e-6:
+    if abs(tg["ROV1"].z - before) > 1e-6:
         break
-p = s.probe(tg["UHD333"].x, tg["UHD333"].y)
+p = s.probe(tg["ROV1"].x, tg["ROV1"].y)
 check("a stale depth falls back to the seabed",
-      abs(tg["UHD333"].z - p.z) < 1e-6,
-      f"z {tg['UHD333'].z:,.1f} vs seabed {p.z:,.1f}")
-check("and the marker is dimmed", tg["UHD333"].stale)
+      abs(tg["ROV1"].z - p.z) < 1e-6,
+      f"z {tg['ROV1'].z:,.1f} vs seabed {p.z:,.1f}")
+check("and the marker is dimmed", tg["ROV1"].stale)
 
 sock.close()
 win.listen_b.setChecked(False)

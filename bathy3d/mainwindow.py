@@ -15,7 +15,7 @@ from . import calib, raster
 from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
-                   UMBILICALS, explain)
+                   UMBILICALS, explain, slot_for as feed_slot_for)
 from .measure import compass
 from . import ramps
 from .targets import DEFAULT_TRAIL_SECONDS
@@ -352,6 +352,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fleet_dialog = None
         self.calib = calib.Calibration(prefs.view("calib/on"))
         self.calib.load(prefs.tiepoints())
+        # Tie-ins outlive a session, so points saved before the slots were made
+        # generic still name one vessel's own vehicles. calib.py is kept free
+        # of the feed, so the mapping happens here, once, on the way in.
+        for point in self.calib.points:
+            point.vehicle = feed_slot_for(point.vehicle)
+        self.calib.refit()
         self._calib_dialog = None
         self._build_controls()
         self._build_readout()

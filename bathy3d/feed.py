@@ -3,12 +3,12 @@
 Positions (default port 6451), one record, about 1 Hz::
 
     706148.701,3006428.410,705939.201,3006546.099,706515.275,3006391.404,...
-    |__ Vessel E/N ___| |__ UHD333 E/N ___| |__ UHD334 E/N ___| then TMS333, TMS334
+    |__ Vessel E/N ___| |__ ROV1 E/N _____| |__ ROV2 E/N _____| then TMS1, TMS2
 
 Depths (default port 6452), metres below the surface, positive down::
 
     1656.082,1646.926,1492.150,1508.260
-    | UHD333 | UHD334 | TMS333 | TMS334
+    |  ROV1  |  ROV2  |  TMS1  |  TMS2
 
 Both are comma-separated with three decimals a field, carry no timestamp, and -
 the part that matters - have **no separator between one record and the next**.
@@ -36,19 +36,32 @@ from PySide6 import QtCore
 
 #: Which vehicle each coordinate pair belongs to, in wire order. Change this
 #: tuple - and nothing else - if the sender's field order changes.
-ORDER = ("Vessel", "UHD333", "UHD334", "TMS333", "TMS334")
+ORDER = ("Vessel", "ROV1", "ROV2", "TMS1", "TMS2")
 
 #: Which vehicle each depth belongs to, in wire order. The vessel is at the
 #: surface and carries no depth.
-DEPTH_ORDER = ("UHD333", "UHD334", "TMS333", "TMS334")
+DEPTH_ORDER = ("ROV1", "ROV2", "TMS1", "TMS2")
 
 #: Tether management system above, ROV below - used for the tether lines and
 #: for pairing the two in the readout.
-TETHERS = {"UHD333": "TMS333", "UHD334": "TMS334"}
+TETHERS = {"ROV1": "TMS1", "ROV2": "TMS2"}
 
 #: Umbilicals: each TMS hangs off the vessel. Drawn the same way as a tether,
 #: so the whole chain from ship to ROV reads as one line.
-UMBILICALS = {"TMS333": "Vessel", "TMS334": "Vessel"}
+UMBILICALS = {"TMS1": "Vessel", "TMS2": "Vessel"}
+
+#: The slots are wire positions, not names, so they are generic: what a vessel
+#: actually calls its vehicles is a label set in Vehicles > Names and colours.
+#: These were originally one vessel's own names, and settings written then -
+#: calibration tie-ins especially, which outlive a session - still carry them.
+#: Mapped on the way in so a rename of the slots does not orphan them.
+LEGACY_SLOTS = {"UHD333": "ROV1", "UHD334": "ROV2",
+                "TMS333": "TMS1", "TMS334": "TMS2"}
+
+
+def slot_for(name: str) -> str:
+    """The current slot for a name that may have been written by an older build."""
+    return LEGACY_SLOTS.get(str(name), str(name))
 
 #: Bodies a depth calibration tie-in can be taken on: the ones that actually
 #: land. A TMS hangs off the umbilical in mid-water and never touches bottom,

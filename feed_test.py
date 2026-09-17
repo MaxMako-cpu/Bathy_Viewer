@@ -37,7 +37,7 @@ LIVE = [
     [706147.132, 3006425.672, 705937.781, 3006543.999, 706513.567, 3006388.189,
      705939.700, 3006546.100, 706510.700, 3006384.500],
 ]
-#: Real depths off the survey PC: UHD333, UHD334, TMS333, TMS334.
+#: Real depths off the survey PC: ROV1, ROV2, TMS1, TMS2.
 DEPTHS = [
     [1656.082, 1646.926, 1492.150, 1508.260],
     [1656.111, 1646.949, 1492.190, 1509.330],
@@ -174,8 +174,8 @@ def part2_live(grid):
 
     colours = {nm: win.view.targets.targets[nm].color for nm in ORDER}
     check("colours as asked",
-          colours["Vessel"] == "#ff3ad2" and colours["UHD333"] == "#ff3b30"
-          and colours["UHD334"] == "#2ecc50", str(colours))
+          colours["Vessel"] == "#ff3ad2" and colours["ROV1"] == "#ff3b30"
+          and colours["ROV2"] == "#2ecc50", str(colours))
 
     check("table has a row per body", win.tgt_table.rowCount() == len(ORDER))
     check("trails accumulate",

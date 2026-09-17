@@ -52,22 +52,22 @@ def go():
     # --- age trimming: short window must drop old points
     lay.set_trail_seconds(2.0)
     for i in range(12):
-        lay.update("UHD333", E + i*0.6, N - i*1.0, None)
+        lay.update("ROV1", E + i*0.6, N - i*1.0, None)
         pump(200)
-    n_short = len(lay.targets["UHD333"].trail)
+    n_short = len(lay.targets["ROV1"].trail)
     check("short window trims by age", n_short < 12, f"{n_short} points kept over ~2.4 s")
 
     # --- widening keeps what arrives after
     lay.set_trail_seconds(86400)
     lay.clear_trail()
     for i in range(20):
-        lay.update("UHD333", E + i*0.6, N - i*1.0, None)
-    check("24h window keeps everything", len(lay.targets["UHD333"].trail) == 20,
-          f"{len(lay.targets['UHD333'].trail)}")
+        lay.update("ROV1", E + i*0.6, N - i*1.0, None)
+    check("24h window keeps everything", len(lay.targets["ROV1"].trail) == 20,
+          f"{len(lay.targets['ROV1'].trail)}")
 
     # --- a full 24 h of 1 Hz track, injected with synthetic timestamps
     lay.clear_trail()
-    tgt = lay.ensure("UHD334")
+    tgt = lay.ensure("ROV2")
     now = time.monotonic()
     span, rate = 86400, 1.0
     n = int(span / rate)
@@ -85,14 +85,14 @@ def go():
     t0 = time.perf_counter(); lay._place(tgt); dt = (time.perf_counter()-t0)*1000
     print(f"  drawing a 24 h trail took {dt:.1f} ms")
     check("24h trail draws fast enough for 1 Hz", dt < 250, f"{dt:.1f} ms")
-    drawn = lay._actors["UHD334"]["trail"].GetMapper().GetInput().GetNumberOfPoints()
+    drawn = lay._actors["ROV2"]["trail"].GetMapper().GetInput().GetNumberOfPoints()
     print(f"  drawn vertices {drawn:,} (cap {TRAIL_DRAW_MAX:,})")
     check("drawn line is capped", drawn <= TRAIL_DRAW_MAX + 1, str(drawn))
     check("history is not destroyed by drawing", len(tgt.trail) == n)
 
     # newest point must survive subsampling or the line misses the marker
     import numpy as np
-    pts = lay._actors["UHD334"]["trail"].GetMapper().GetInput().points
+    pts = lay._actors["ROV2"]["trail"].GetMapper().GetInput().points
     last_hist = np.array(tgt.trail[-1][:3]); last_hist[2] *= lay._ve
     check("trail still reaches the marker",
           float(np.linalg.norm(np.array(pts[-1]) - last_hist)) < 1e-6)
@@ -103,7 +103,7 @@ def go():
           f"{len(tgt.trail)}")
     lay.set_trail_seconds(0)
     check("Off clears trails", len(tgt.trail) == 0)
-    check("Off removes the line actor", "trail" not in lay._actors.get("UHD334", {}))
+    check("Off removes the line actor", "trail" not in lay._actors.get("ROV2", {}))
 
     # --- via the UI combo
     win.trail_c.setCurrentText("24 hours"); pump(150)

@@ -39,7 +39,7 @@ def check(name, cond, detail=""):
         FAILED.append(name)
 
 
-def tp(grid_depth, feed_depth, vehicle="UHD333"):
+def tp(grid_depth, feed_depth, vehicle="ROV1"):
     return calib.TiePoint(vehicle=vehicle, x=0.0, y=0.0,
                           grid_depth=grid_depth, feed_depth=feed_depth)
 
@@ -106,7 +106,7 @@ check("far outside is flagged", m3.outside(3200.0) and m3.outside(200.0))
 check("an unfitted model flags nothing", not calib.fit([]).outside(9999.0))
 
 # Settings outlive versions, so a row that cannot be read costs one point.
-p = calib.TiePoint("UHD334", 705939.201, 3006546.099, 1616.85, 1656.082,
+p = calib.TiePoint("ROV2", 705939.201, 3006546.099, 1616.85, 1656.082,
                    when=1_700_000_000.0, grid="C:/x/y.tif")
 back = calib.TiePoint.decode(p.encode())
 check("a tie-in survives the round trip",
@@ -169,20 +169,20 @@ assert win.feed is not None and win.dfeed is not None, "listeners did not start"
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
-def send(site, uhd333_depth):
-    """Put UHD333 exactly on one site at a chosen depth, the others beside it.
+def send(site, rov1_depth):
+    """Put ROV1 exactly on one site at a chosen depth, the others beside it.
 
-    UHD333 is the vehicle every check below ties in, so it has to sit on the
+    ROV1 is the vehicle every check below ties in, so it has to sit on the
     coordinate the test probes - a body nudged 3 m away lands in the next cell
     and reads a slightly different seabed.
     """
     e, n = site
-    home = ORDER.index("UHD333")
+    home = ORDER.index("ROV1")
     pos = []
     for i, _ in enumerate(ORDER):
         pos += [e + (i - home) * 3.0, n + (i - home) * 3.0]
-    depths = [uhd333_depth, uhd333_depth - 8.0,
-              uhd333_depth - 160.0, uhd333_depth - 150.0]
+    depths = [rov1_depth, rov1_depth - 8.0,
+              rov1_depth - 160.0, rov1_depth - 150.0]
     sock.sendto(",".join(f"{v:.3f}" for v in pos).encode(), ("127.0.0.1", PPORT))
     sock.sendto(",".join(f"{v:.3f}" for v in depths).encode(), ("127.0.0.1", DPORT))
     # The parser holds the trailing record until something confirms it, so a
@@ -195,12 +195,12 @@ def send(site, uhd333_depth):
     # at the same depth and quietly cost the fit its slope.
     for _ in range(40):
         pump(80)
-        got = win._depths.get("UHD333")
-        here = win._positions.get("UHD333")
-        if (got is not None and abs(got[0] - uhd333_depth) < 0.01
+        got = win._depths.get("ROV1")
+        here = win._positions.get("ROV1")
+        if (got is not None and abs(got[0] - rov1_depth) < 0.01
                 and here is not None and abs(here[0] - e) < 0.01):
             return
-    raise AssertionError(f"UHD333 never reached {uhd333_depth:,.2f} m at {site}")
+    raise AssertionError(f"ROV1 never reached {rov1_depth:,.2f} m at {site}")
 
 
 check("calibration starts off", not win.calib.enabled and not win.calib.model.on)
@@ -211,7 +211,7 @@ check("the depth column is unmarked",
 # A TMS hangs in mid-water on the umbilical and never lands, so it can never
 # witness the seabed. It carries a depth, but that depth ties to nothing.
 check("only the bodies that land can be tied in",
-      BOTTOM_ORDER == ("UHD333", "UHD334"), str(BOTTOM_ORDER))
+      BOTTOM_ORDER == ("ROV1", "ROV2"), str(BOTTOM_ORDER))
 check("no TMS is offered a tie-in menu entry",
       not any("TMS" in nm for nm in win.act_tie), str(sorted(win.act_tie)))
 check("every offered body does carry a depth",
@@ -223,15 +223,15 @@ grid_shallow = -surf.probe(*SHALLOW).z
 FEED_SHALLOW = grid_shallow * 1.024        # feed reads 2.4% deeper than the grid
 send(SHALLOW, FEED_SHALLOW)
 check("a position and a depth arrived",
-      win._positions.get("UHD333") is not None
-      and win._depths.get("UHD333") is not None)
+      win._positions.get("ROV1") is not None
+      and win._depths.get("ROV1") is not None)
 
-raw_before = win.view.targets.targets["UHD333"].z
+raw_before = win.view.targets.targets["ROV1"].z
 check("uncalibrated, the marker sits at the raw feed depth",
       abs(-raw_before - FEED_SHALLOW) < 0.05,
       f"z {raw_before:,.2f} vs feed {-FEED_SHALLOW:,.2f}")
 
-win.tie_in("UHD333")
+win.tie_in("ROV1")
 check("one tie-in recorded", len(win.calib.points) == 1, str(len(win.calib.points)))
 pt = win.calib.points[0]
 check("it stored the raw feed depth, not a corrected one",
@@ -242,14 +242,14 @@ check("it stored the grid's depth at that spot",
 check("it names the grid it was tied on", pt.grid == GRID, pt.grid)
 check("the switch is now available", win.act_calib.isEnabled())
 check("but nothing moved until it is switched on",
-      abs(win.view.targets.targets["UHD333"].z - raw_before) < 1e-9)
+      abs(win.view.targets.targets["ROV1"].z - raw_before) < 1e-9)
 
 win.act_calib.setChecked(True)
 pump(200)
 check("switched on, the marker lands on the grid's seabed",
-      abs(-win.view.targets.targets["UHD333"].z - grid_shallow) < 0.05,
-      f"z {win.view.targets.targets['UHD333'].z:,.2f} vs seabed {-grid_shallow:,.2f}")
-row = ORDER.index("UHD333")
+      abs(-win.view.targets.targets["ROV1"].z - grid_shallow) < 0.05,
+      f"z {win.view.targets.targets['ROV1'].z:,.2f} vs seabed {-grid_shallow:,.2f}")
+row = ORDER.index("ROV1")
 check("altitude falls to zero", win.tgt_table.item(row, 4).text() in ("0.0", "-0.0"),
       win.tgt_table.item(row, 4).text())
 check("the depth column says it is corrected",
@@ -267,7 +267,7 @@ check("the two sites are far enough apart in depth",
       f"{abs(FEED_DEEP - FEED_SHALLOW):,.0f} m apart")
 
 send(DEEP, FEED_DEEP)
-win.tie_in("UHD333")
+win.tie_in("ROV1")
 m = win.calib.model
 check("two spread tie-ins fit a line", m.kind == "scale", m.kind)
 want_b = (grid_deep - grid_shallow) / (FEED_DEEP - FEED_SHALLOW)
@@ -276,8 +276,8 @@ check("the slope matches the line through both points",
 check("the scale reads as roughly -2.3%", abs(m.scale_pct + 2.34) < 0.1,
       f"{m.scale_pct:+.3f}%")
 check("it still lands the deep vehicle on the seabed",
-      abs(-win.view.targets.targets["UHD333"].z - grid_deep) < 0.05,
-      f"z {win.view.targets.targets['UHD333'].z:,.2f} vs seabed {-grid_deep:,.2f}")
+      abs(-win.view.targets.targets["ROV1"].z - grid_deep) < 0.05,
+      f"z {win.view.targets.targets['ROV1'].z:,.2f} vs seabed {-grid_deep:,.2f}")
 
 mid = (FEED_SHALLOW + FEED_DEEP) / 2.0
 check("an untied depth in between is interpolated, not guessed",
@@ -328,8 +328,8 @@ check("clearing every point switches calibration off",
 check("and the depth column loses its mark",
       win.tgt_table.horizontalHeaderItem(3).text() == "Depth")
 check("the vehicle is back at the raw feed depth",
-      abs(-win.view.targets.targets["UHD333"].z - FEED_DEEP) < 0.05,
-      f"z {win.view.targets.targets['UHD333'].z:,.2f}")
+      abs(-win.view.targets.targets["ROV1"].z - FEED_DEEP) < 0.05,
+      f"z {win.view.targets.targets['ROV1'].z:,.2f}")
 
 win.listen_b.setChecked(False)
 pump(300)

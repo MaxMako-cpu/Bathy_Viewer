@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pyvista as pv
 
-#: Default look of the three tracked bodies. Names match feed.ORDER.
+#: Default look of each tracked body, keyed by feed.ORDER's slots. The slots
+#: are generic wire positions - what a vessel calls its vehicles is a label,
+#: set in Vehicles > Names and colours and held in vehicles.Fleet.
 #: The feed carries no heading, so all three are dots - the directional vessel
 #: glyph is kept in _glyph() for when a heading source exists.
 DEFAULT_TARGETS = {
@@ -26,12 +28,12 @@ DEFAULT_TARGETS = {
     # runs the height of the scene. Its umbilicals do the connecting instead.
     "Vessel": {"color": "#ff3ad2", "kind": "dot", "size": 1.15,
                "stem": False},                                          # magenta
-    "UHD333": {"color": "#ff3b30", "kind": "dot", "size": 0.9},        # red
-    "UHD334": {"color": "#2ecc50", "kind": "dot", "size": 0.9},        # green
+    "ROV1": {"color": "#ff3b30", "kind": "dot", "size": 0.9},          # red
+    "ROV2": {"color": "#2ecc50", "kind": "dot", "size": 0.9},          # green
     # Each TMS in a darker shade of its own ROV, so the pairing reads at a
     # glance without having to check the labels.
-    "TMS333": {"color": "#c0392b", "kind": "cylinder", "size": 1.0},   # dark red
-    "TMS334": {"color": "#1e8e3e", "kind": "cylinder", "size": 1.0},   # dark green
+    "TMS1": {"color": "#c0392b", "kind": "cylinder", "size": 1.0},     # dark red
+    "TMS2": {"color": "#1e8e3e", "kind": "cylinder", "size": 1.0},     # dark green
 }
 
 #: Real TMS dimensions, metres.
@@ -103,10 +105,6 @@ class Target:
     color: str = "#f2c14e"
     kind: str = "rov"
     size: float = 1.0
-
-    @property
-    def shown(self) -> str:
-        return self.label or self.name
     x: float = float("nan")  # CRS
     y: float = float("nan")
     z: float = float("nan")  # elevation, metres, positive up
@@ -122,6 +120,11 @@ class Target:
     @property
     def fix(self) -> bool:
         return math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.z)
+
+    @property
+    def shown(self) -> str:
+        """What to draw: the operator's name for it, or the slot if unnamed."""
+        return self.label or self.name
 
 
 class TargetLayer:

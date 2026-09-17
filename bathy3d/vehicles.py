@@ -1,7 +1,7 @@
 """What each body is called and what colour it is drawn in.
 
 The app moves between vessels, and every vessel names its vehicles
-differently - UHD333 on one is Hercules on the next. But the names in
+differently - ROV1 on one is Hercules on the next. But the names in
 ``feed.ORDER`` are not really names: they are *slots*, one per pair of fields
 in the wire record, and the whole program is keyed on them. ``TETHERS`` pairs
 a TMS to its ROV by slot, the vessel is recognised by slot, every actor in the
@@ -10,7 +10,7 @@ taken on - on disk, outliving the session.
 
 So a rename must not be a rename. The slot is permanent; what changes is the
 **label** drawn over it. Nothing structural moves, and a tie-in taken as
-UHD333 still reads correctly once UHD333 has become Hercules.
+ROV1 still reads correctly once ROV1 has become Hercules.
 
 Colours work the same way, with one rule of their own: a TMS is not given a
 colour, it *inherits* one from the ROV it is tethered to, darkened. That is
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import colorsys
 
-from .feed import ORDER, TETHERS
+from .feed import ORDER, TETHERS, slot_for
 from .targets import DEFAULT_TARGETS
 
 #: How much darker a TMS is drawn than its own ROV, as a fraction of the ROV's
@@ -173,9 +173,14 @@ class Fleet:
         self.reset()
         for row in rows or []:
             parts = str(row).split("|")
-            if len(parts) < 3 or parts[0] not in ORDER:
+            if len(parts) < 3:
                 continue
-            slot, label, colour = parts[0], parts[1], parts[2]
+            # Rows written before the slots were made generic name one vessel's
+            # own vehicles; map those forward rather than dropping them.
+            slot = slot_for(parts[0])
+            if slot not in ORDER:
+                continue
+            label, colour = parts[1], parts[2]
             if label:
                 self.set_label(slot, label)
             if colour and slot not in FOLLOWS:

@@ -264,14 +264,14 @@ Positions (default **6451**), about 1 Hz:
 
 ```
 706148.701,3006428.410,705939.201,3006546.099,706515.275,3006391.404,705941.900,3006549.300,706512.600,3006388.100
-|__ Vessel E/N __| |__ UHD333 E/N __| |__ UHD334 E/N __| |__ TMS333 E/N __| |__ TMS334 E/N __|
+|__ Vessel E/N __| |__ ROV1 E/N __| |__ ROV2 E/N __| |__ TMS1 E/N __| |__ TMS2 E/N __|
 ```
 
 Depths (default **6452**), metres below the surface, positive down:
 
 ```
 1656.082,1646.926,1492.150,1508.260
-| UHD333 | UHD334 | TMS333 | TMS334
+| ROV1 | ROV2 | TMS1 | TMS2
 ```
 
 Eastings and northings are read in **the loaded grid's CRS** — no transform, so
@@ -280,8 +280,8 @@ the feed and the grid must agree (UTM 15N for the BOEM file).
 | Body | Drawn as |
 | --- | --- |
 | Vessel | magenta dot, at the surface or on the bottom beneath itself |
-| UHD333 / UHD334 | red and green dots, at their reported depth |
-| TMS333 / TMS334 | darker red and green cylinders, 3 m × 2 m, at their depth |
+| ROV1 / ROV2 | red and green dots, at their reported depth |
+| TMS1 / TMS2 | darker red and green cylinders, 3 m × 2 m, at their depth |
 
 Thin dotted lines run the length of the chain: an **umbilical** from the vessel
 down to each TMS, and a **tether** from each TMS down to its own ROV. **Show
@@ -355,8 +355,8 @@ altitude, speed over the ground and the age of the last fix. Targets dim after
 Field order lives in two tuples in `bathy3d/feed.py`:
 
 ```python
-ORDER = ("Vessel", "UHD333", "UHD334", "TMS333", "TMS334")
-DEPTH_ORDER = ("UHD333", "UHD334", "TMS333", "TMS334")
+ORDER = ("Vessel", "ROV1", "ROV2", "TMS1", "TMS2")
+DEPTH_ORDER = ("ROV1", "ROV2", "TMS1", "TMS2")
 ```
 
 Add or reorder vehicles there, give each a colour and a kind in
@@ -376,13 +376,16 @@ different. **Vehicles › Names and colours…** renames each body and sets the
 colour it is drawn in — markers, labels, trails, tethers, the Live positions
 table and the calibration dialog all follow.
 
+The defaults are deliberately generic — `ROV1`, `ROV2`, `TMS1`, `TMS2` — because
+no two vessels use the same names. Set yours once and they are remembered.
+
 **A rename is only a rename.** The names in `feed.ORDER` are not really names,
 they are *slots* — one per pair of fields in the wire record — and the program
 is keyed on them throughout: `TETHERS` pairs a TMS to its ROV by slot, the
 vessel is recognised by slot, every actor in the scene is named after one, and
 a calibration tie-in stores the slot it was taken on, on disk, outliving the
 session. So the slot never changes; what changes is the label drawn over it.
-Tie in as UHD333, rename it Hercules, and the point still reads correctly —
+Tie in as ROV1, rename it Hercules, and the point still reads correctly —
 under the new name.
 
 A **TMS is not given a colour.** It inherits its ROV's, darkened, which is
@@ -405,6 +408,11 @@ asked for.
 
 The number of bodies is fixed at five, because the wire format is: ten
 position fields and four depth fields. Renaming does not change that.
+
+The slots were once one vessel's own vehicle names (`UHD333` and friends).
+Settings written then — calibration tie-ins especially, which outlive a
+session — still carry them, so `feed.LEGACY_SLOTS` maps them forward on the
+way in rather than letting them orphan.
 
 ## Depth calibration
 
