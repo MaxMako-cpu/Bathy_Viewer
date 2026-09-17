@@ -276,10 +276,24 @@ class FleetDialog(QtWidgets.QDialog):
             swatch.setStyleSheet(
                 f"background: {colour}; color: {ink}; border: 1px solid #2b414a;")
 
-    def _renamed(self, slot):
-        edit, _ = self._rows[slot]
-        self.win.fleet.set_label(slot, edit.text())
+    def commit(self):
+        """Take whatever is in the boxes and make it the fleet's.
+
+        ``editingFinished`` only fires on Enter or on the box losing focus, so
+        a name typed and left sitting there is not yet the fleet's. Committing
+        on every exit from this dialog - and again when the window closes - is
+        what stops a rename being lost by someone who simply quits the app.
+        """
+        for slot, (edit, _swatch) in self._rows.items():
+            self.win.fleet.set_label(slot, edit.text())
         self.win.apply_fleet()
+
+    def hideEvent(self, e):
+        self.commit()
+        super().hideEvent(e)
+
+    def _renamed(self, slot):
+        self.commit()
 
     def _pick(self, slot):
         current = QtGui.QColor(self.win.fleet.colour(slot))
@@ -1785,6 +1799,10 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             prefs.set_geometry(self.saveGeometry())
             prefs.set_dock_state(self.saveState())
+            # apply_fleet already writes these whenever anything changes; doing
+            # it again on the way out costs nothing and means the names cannot
+            # be lost by a path that forgot to call it.
+            prefs.set_fleet(self.fleet.encode())
             prefs.set_view("view/ve", self.ve_s.value() / 10.0)
             prefs.set_view("view/sun_az", self.az_s.value())
             prefs.set_view("view/sun_alt", self.al_s.value())
@@ -1872,6 +1890,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # teardown emits editingFinished, which lands in apply_fleet after the
         # table it wants has already gone - so the flag is set before anything
         # else, and the dialogs are shut while the window is still whole.
+        # Anything typed but not yet committed is committed here, while the
+        # widgets are still alive and before the teardown guard goes up. This
+        # order matters: the guard was silently dropping a name the operator
+        # had typed and then quit on, because closing the dialog blurs the box
+        # and the resulting editingFinished landed after the guard was set.
+        if self._fleet_dialog is not None:
+            try:
+                self._fleet_dialog.commit()
+            except Exception:
+                pass
         self._closing = True
         for attr in ("_fleet_dialog", "_calib_dialog", "_feed_dialog"):
             dlg = getattr(self, attr, None)

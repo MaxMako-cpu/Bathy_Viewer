@@ -281,6 +281,57 @@ except RuntimeError as exc:
 check("closing with the vehicles dialog open is clean", closed_cleanly)
 pump(200)
 
+# --- a real restart, not a re-read of the settings ------------------------
+#
+# The earlier round-trip check loaded a Fleet straight from the encoded rows,
+# which passes even when the window never writes them. What the operator does
+# is type a name and quit, so that is what gets driven here: the name is left
+# sitting in the box, uncommitted, and the app is closed on it. This is the
+# regression that shipped - closeEvent raised its teardown guard before the
+# dialogs were shut, so the editingFinished that closing them fired was
+# ignored and the name was dropped.
+print("\nnames survive a real restart:")
+win2 = MainWindow(GRID)
+win2.show()
+for _ in range(600):
+    pump(100)
+    if win2.view.surface is not None:
+        break
+win2.fleet.reset()
+win2.apply_fleet()
+win2.show_fleet()
+pump(200)
+win2._fleet_dialog._rows["ROV1"][0].setFocus()
+pump(80)
+win2._fleet_dialog._rows["ROV1"][0].setText("Hercules")
+win2._fleet_dialog._rows["Vessel"][0].setText("Island Pride")
+check("typed but not committed, the fleet has not seen it yet",
+      win2.fleet.label("ROV1") == "ROV1", win2.fleet.label("ROV1"))
+win2.close()
+pump(400)
+check("quitting commits what was typed",
+      any("Hercules" in r for r in _prefs.fleet()), str(_prefs.fleet()))
+
+win3 = MainWindow(GRID)
+win3.show()
+for _ in range(600):
+    pump(100)
+    if win3.view.surface is not None:
+        break
+check("the ROV name is there on the next run",
+      win3.fleet.label("ROV1") == "Hercules", win3.fleet.label("ROV1"))
+check("and the vessel name", win3.fleet.label("Vessel") == "Island Pride",
+      win3.fleet.label("Vessel"))
+check("the table shows them, not the slots",
+      win3.tgt_table.item(ORDER.index("ROV1"), 0).text() == "Hercules",
+      win3.tgt_table.item(ORDER.index("ROV1"), 0).text())
+check("and so does the tie-in menu",
+      "Hercules" in win3.act_tie["ROV1"].text(), win3.act_tie["ROV1"].text())
+check("the untouched ones are still their slot names",
+      win3.fleet.label("ROV2") == "ROV2", win3.fleet.label("ROV2"))
+win3.close()
+pump(200)
+
 print()
 if FAILED:
     print(f"{len(FAILED)} FAILED: " + ", ".join(FAILED))
