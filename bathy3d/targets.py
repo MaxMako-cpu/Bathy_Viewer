@@ -66,19 +66,28 @@ TRAIL_DRAW_MAX = 4000
 MAX_TRAIL_POINTS = 400_000
 
 
-def draw_on_top(actor) -> None:
+#: Depth bias for things drawn over the terrain. Larger means nearer the
+#: viewer, so these are layers, not a single "on top": a slope box is a sheet
+#: of terrain and has to sit *under* the overlays and tracking marks, or it
+#: buries everything inside it.
+ON_TOP_SHEET = 8_000       # slope box - just clear of the terrain
+ON_TOP_MARK = 66_000       # overlays, targets, tethers, measuring furniture
+
+
+def draw_on_top(actor, bias: int = ON_TOP_MARK) -> None:
     """Draw this actor over the terrain instead of letting relief bury it.
 
     A target sitting on the seabed is at exactly the depth of the surface under
     it, so any ridge between it and the camera hides it - and a tracking mark
-    you cannot see is worse than useless. Bias its depth towards the viewer.
+    you cannot see is worse than useless. Bias its depth towards the viewer,
+    by ``bias``, so several such layers still stack in a sensible order.
     """
     try:
         m = actor.GetMapper()
         m.SetResolveCoincidentTopologyToPolygonOffset()
-        m.SetRelativeCoincidentTopologyPointOffsetParameter(-66000)
-        m.SetRelativeCoincidentTopologyLineOffsetParameters(-66000, -66000)
-        m.SetRelativeCoincidentTopologyPolygonOffsetParameters(-66000, -66000)
+        m.SetRelativeCoincidentTopologyPointOffsetParameter(-bias)
+        m.SetRelativeCoincidentTopologyLineOffsetParameters(-bias, -bias)
+        m.SetRelativeCoincidentTopologyPolygonOffsetParameters(-bias, -bias)
     except Exception:
         pass
 

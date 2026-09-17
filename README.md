@@ -172,6 +172,12 @@ Only one box at a time.
 It is cheap enough to feel instant: a 200 m box is 16 x 16 cells, a 10 km box
 0.67 M cells and 29 ms. Boxes over 6 M cells are refused rather than attempted.
 
+The box is a sheet of seabed, so it is drawn *under* everything that belongs on
+the seabed - shapefile overlays, vehicles, tethers, measuring stations - and
+only just clear of the terrain itself. Those layers each carry a depth bias
+(`ON_TOP_SHEET` and `ON_TOP_MARK` in `targets.py`); giving them all the same
+one is what made the box bury its own contents.
+
 Two details worth knowing. The window is read with a **one-cell halo**, so slope
 at the very edge of the box comes from real neighbours rather than a clamped
 short baseline. And the patch sits at **true elevations while the terrain around

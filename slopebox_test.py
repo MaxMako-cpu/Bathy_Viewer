@@ -179,6 +179,50 @@ check("one click places a fixed box",
       win.view.patch is not None and 180 < win.view.patch.stats()["side_x"] < 220,
       f"{win.view.patch.stats()['side_x']:,.0f} m" if win.view.patch else "none")
 
+# A slope box is a sheet of seabed, so anything that belongs on the seabed -
+# shapefiles, vehicles, stations - has to stay visible through it. With every
+# "draw on top" layer given the same depth bias, the box simply buried them.
+SHP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   "EGN10_Preplot_SHP.shp")
+if os.path.exists(SHP):
+    print("\noverlays stay visible inside the box:")
+    win.view.clear_patch()
+    win.add_overlay_path(SHP)
+    pump(500)
+    win.view.set_overlay_colour("EGN10_Preplot_SHP", "#ff00ff")
+    pump(250)
+    op = win.view.overlays["EGN10_Preplot_SHP"].parts[0]
+    lx, ly = float(op[:, 0].mean()), float(op[:, 1].mean())
+    ox, oy = s.crs_from_local(lx, ly)
+    opr = s.probe(ox, oy)
+    cam = win.view.plotter.camera
+
+    def _look(d=4200):
+        cam.focal_point = (lx, ly, opr.z * win.view.ve)
+        cam.position = (lx, ly - d * 0.2, opr.z * win.view.ve + d)
+        cam.up = (0, 1, 0)
+        win.view.update_clipping()
+        pump(300)
+
+    def _magenta():
+        img = np.asarray(win.view.plotter.screenshot(return_img=True)).astype(int)
+        return int(((img[:, :, 0] > 170) & (img[:, :, 1] < 100)
+                    & (img[:, :, 2] > 170)).sum())
+
+    _look()
+    n_before = _magenta()
+    win.view.make_patch(ox - 1400, oy - 1400, ox + 1400, oy + 1400)
+    pump(400)
+    _look()
+    n_after = _magenta()
+    print(f"  overlay pixels {n_before} without the box, {n_after} with it")
+    check("the overlay is visible at all", n_before > 0, str(n_before))
+    check("the box does not cover the overlay", n_after >= n_before * 0.6,
+          f"{100 * n_after / max(n_before, 1):.0f}% kept")
+    win.ov_list.setCurrentRow(0)
+    win.remove_overlay()
+    pump(200)
+
 print("\nlimits and clean-up:")
 try:
     s.slope_patch(s.cx - 60000, s.cy - 60000, s.cx + 60000, s.cy + 60000)

@@ -14,7 +14,8 @@ from vtkmodules.vtkRenderingCore import vtkPropPicker
 from . import ramps
 from .measure import MeasureLine, Station
 from . import ramps as _ramps
-from .targets import BASE_POINT_PX, TargetLayer, draw_on_top
+from .targets import (BASE_POINT_PX, ON_TOP_SHEET, TargetLayer,
+                      draw_on_top)
 
 #: Colour of measurement furniture.
 MEASURE_COLOR = "#f0a93c"
@@ -827,7 +828,10 @@ class TerrainView(QtWidgets.QWidget):
             smooth_shading=True, ambient=0.30, diffuse=0.85,
             show_scalar_bar=False, render=False, pickable=False)
         actor.SetScale(1.0, 1.0, self.ve)
-        draw_on_top(actor)
+        # Only just clear of the terrain: the box is a sheet of seabed, and
+        # anything drawn on the seabed - overlays, vehicles, stations - has to
+        # stay visible through it rather than be covered by it.
+        draw_on_top(actor, ON_TOP_SHEET)
         self._draw_patch_edge()
 
     def _draw_patch_edge(self) -> None:
