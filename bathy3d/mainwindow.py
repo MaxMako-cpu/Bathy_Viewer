@@ -12,7 +12,7 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import calib, raster
-from .feed import (DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
+from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
                    UMBILICALS, explain)
@@ -759,9 +759,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_calib.toggled.connect(self._calib_toggled)
         cm.addSeparator()
 
-        # One entry per vehicle that carries a depth. The vessel has none.
+        # Only the bodies that land. The vessel carries no depth at all, and a
+        # TMS hangs in mid-water on the umbilical - it never touches bottom, so
+        # it can never witness the seabed a tie-in has to be measured against.
         self.act_tie = {}
-        for nm in DEPTH_ORDER:
+        for nm in BOTTOM_ORDER:
             act = cm.addAction(f"Tie in {nm} (on bottom now)")
             act.setToolTip(
                 f"Record what the grid and the feed each say at {nm}'s "
@@ -808,6 +810,13 @@ class MainWindow(QtWidgets.QMainWindow):
         correction instead of the error, and each one would fold the previous
         ones in again.
         """
+        if name not in BOTTOM_ORDER:
+            QtWidgets.QMessageBox.information(
+                self, "Cannot tie in",
+                f"{name} never sits on the bottom, so its depth has nothing "
+                "to tie to. Tie in on a vehicle that lands: "
+                + ", ".join(BOTTOM_ORDER) + ".")
+            return
         s = self.view.surface
         if s is None:
             QtWidgets.QMessageBox.information(

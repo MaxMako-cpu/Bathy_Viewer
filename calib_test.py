@@ -133,7 +133,7 @@ check("the description reads as a sentence",
 print("\nlive, through the window and both listeners:")
 
 from PySide6 import QtWidgets                # noqa: E402
-from bathy3d.feed import DEPTH_ORDER, ORDER  # noqa: E402
+from bathy3d.feed import BOTTOM_ORDER, DEPTH_ORDER, ORDER  # noqa: E402
 from bathy3d.mainwindow import MainWindow    # noqa: E402
 
 # Two sites far enough apart in depth that the fit is allowed a slope.
@@ -207,6 +207,15 @@ check("calibration starts off", not win.calib.enabled and not win.calib.model.on
 check("the switch is greyed out with no points", not win.act_calib.isEnabled())
 check("the depth column is unmarked",
       win.tgt_table.horizontalHeaderItem(3).text() == "Depth")
+
+# A TMS hangs in mid-water on the umbilical and never lands, so it can never
+# witness the seabed. It carries a depth, but that depth ties to nothing.
+check("only the bodies that land can be tied in",
+      BOTTOM_ORDER == ("UHD333", "UHD334"), str(BOTTOM_ORDER))
+check("no TMS is offered a tie-in menu entry",
+      not any("TMS" in nm for nm in win.act_tie), str(sorted(win.act_tie)))
+check("every offered body does carry a depth",
+      all(nm in DEPTH_ORDER for nm in BOTTOM_ORDER), str(BOTTOM_ORDER))
 
 # --- first tie-in, at the shallow site -------------------------------------
 

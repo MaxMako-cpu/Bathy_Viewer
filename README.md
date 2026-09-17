@@ -358,8 +358,9 @@ DEPTH_ORDER = ("UHD333", "UHD334", "TMS333", "TMS334")
 
 Add or reorder vehicles there, give each a colour and a kind in
 `DEFAULT_TARGETS` (`bathy3d/targets.py`), and pair any new TMS to its ROV in
-`TETHERS`. The record lengths follow from the tuples; nothing else needs
-changing.
+`TETHERS`. The record lengths follow from the tuples, and so does
+`BOTTOM_ORDER` — the bodies offered a calibration tie-in, being those that
+carry a depth and are not a TMS. Nothing else needs changing.
 
 `python -m bathy3d.feed 6451` sniffs the position feed and `python -m
 bathy3d.feed 6452` the depth feed, printing each datagram and what it decoded
@@ -387,6 +388,14 @@ certainly on the bottom: what the grid said, what the feed said, and where.
 The difference is the error, there, at that depth. **Apply depth calibration**
 switches the correction on; it starts off and stays off until asked, because a
 correction applied unbidden silently moves every vehicle.
+
+Only the **UHDs** are offered. A TMS carries a depth, but it hangs off the
+umbilical in mid-water and never lands, so it can never witness the seabed and
+its depth ties to nothing. The list comes from `BOTTOM_ORDER` in `feed.py`,
+which is derived from `DEPTH_ORDER` minus everything named in `TETHERS` — add
+a vehicle to the feed tuples and it appears here on its own. The correction
+fitted from the UHDs is applied to **every** vehicle, TMS included: the error
+belongs to the two depth scales, not to any one body.
 
 ### Why one tie-in is not enough
 

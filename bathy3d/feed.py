@@ -50,6 +50,12 @@ TETHERS = {"UHD333": "TMS333", "UHD334": "TMS334"}
 #: so the whole chain from ship to ROV reads as one line.
 UMBILICALS = {"TMS333": "Vessel", "TMS334": "Vessel"}
 
+#: Bodies a depth calibration tie-in can be taken on: the ones that actually
+#: land. A TMS hangs off the umbilical in mid-water and never touches bottom,
+#: so it can never witness the seabed and its depth cannot tie to the grid.
+#: Derived from the tuples above, so adding a vehicle needs no edit here.
+BOTTOM_ORDER = tuple(n for n in DEPTH_ORDER if n not in set(TETHERS.values()))
+
 DEFAULT_PORT = 6451
 DEFAULT_DEPTH_PORT = 6452
 
