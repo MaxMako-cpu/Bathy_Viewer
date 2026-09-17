@@ -70,11 +70,21 @@ left-drag and rotate with shift.
 
 **Colour by** switches between depth and slope, and each keeps its own ramp
 menu and its own last choice, so flipping between them does not lose your
-setting. Depth offers Bathy, Rainbow, Turbo, Spectral, Ocean, Viridis, Terrain,
-Grey and Hillshade only; slope offers Green to red, Steep alert, Turbo, Heat,
-Yellow-orange-red, Viridis, Magma and Grey. The rainbow ramps band the range
-harder than viridis on purpose — small depth changes separate into visibly
-different colours, which is what a survey eye is usually looking for.
+setting. Depth offers Bathy, Rainbow, Rainbow wide, Turbo, Spectral, Ocean,
+Viridis, Terrain, Grey and Hillshade only; slope offers Green to red, Steep
+alert, Turbo, Heat, Yellow-orange-red, Viridis, Magma and Grey. The rainbow
+ramps band the range harder than viridis on purpose — small depth changes
+separate into visibly different colours, which is what a survey eye is usually
+looking for.
+
+**Rainbow wide** is the same idea walked in smaller steps: sixteen stops
+instead of seven, deep violet to dark red through every hue between, so a given
+depth range is split across more distinguishable colours. Neighbouring stops
+are at least 17 CIE76 units apart, so none of them read as one band. Its
+lightness is not monotonic and is not meant to be — a rainbow orders by hue,
+which is exactly what makes small depth changes jump out and equally what makes
+it poor for judging magnitude at a glance. Bathy and Viridis are there for
+that.
 
 The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing,
 CRS easting/northing, latitude/longitude, and the source pixel. The **Measured

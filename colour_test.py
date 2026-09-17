@@ -61,6 +61,43 @@ check("several slope ramps", len(ramps.SLOPE_RAMPS) >= 6,
 check("a rainbow for depth", "Rainbow" in ramps.DEPTH_RAMPS)
 check("the two sets differ", set(ramps.DEPTH_RAMPS) != set(ramps.SLOPE_RAMPS))
 
+# The wide rainbow exists to give a depth range more colours to land in, so
+# the things worth asserting are that it really has more of them and that no
+# two neighbours are so close they read as one band on screen.
+check("a wider rainbow as well", "Rainbow wide" in ramps.DEPTH_RAMPS,
+      ", ".join(ramps.DEPTH_RAMPS))
+check("the two rainbows are not the same ramp",
+      ramps.DEPTH_RAMPS["Rainbow"] is not ramps.DEPTH_RAMPS["Rainbow wide"])
+check("the wide one has more than twice the stops",
+      len(ramps._RAINBOW_WIDE_STOPS) >= 2 * len(ramps._RAINBOW_STOPS),
+      f"{len(ramps._RAINBOW_WIDE_STOPS)} vs {len(ramps._RAINBOW_STOPS)}")
+check("its stops run 0 to 1 in order",
+      [p for p, _ in ramps._RAINBOW_WIDE_STOPS]
+      == sorted(p for p, _ in ramps._RAINBOW_WIDE_STOPS)
+      and ramps._RAINBOW_WIDE_STOPS[0][0] == 0.0
+      and ramps._RAINBOW_WIDE_STOPS[-1][0] == 1.0)
+
+
+def _lab(hexes):
+    """CIE L*a*b*, so "different colour" means different to an eye."""
+    import numpy as np
+    c = np.array([[int(h.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+                  for h in hexes])
+    c = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    M = np.array([[.4124, .3576, .1805], [.2126, .7152, .0722],
+                  [.0193, .1192, .9505]])
+    xyz = c @ M.T / np.array([.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.column_stack([116 * f[:, 1] - 16, 500 * (f[:, 0] - f[:, 1]),
+                            200 * (f[:, 1] - f[:, 2])])
+
+
+import numpy as _np                            # noqa: E402
+_gaps = _np.linalg.norm(
+    _np.diff(_lab([h for _, h in ramps._RAINBOW_WIDE_STOPS]), axis=0), axis=1)
+check("no two neighbouring colours read as one", _gaps.min() >= 12.0,
+      f"tightest pair {_gaps.min():.1f} CIE76, mean {_gaps.mean():.1f}")
+
 win = MainWindow(GRID)
 win.resize(1200, 780)
 win.show()

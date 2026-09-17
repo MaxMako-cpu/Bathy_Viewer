@@ -46,10 +46,30 @@ _RAINBOW_STOPS = (
     (1.00, "#b30326"),
 )
 
+#: The same idea as _RAINBOW_STOPS but walked in much smaller steps: sixteen
+#: stops instead of seven, evenly spaced, from deep violet to dark red through
+#: every hue between. More stops means a given depth range is split across more
+#: distinguishable colours, which is the whole reason a survey eye reaches for
+#: a rainbow. Every neighbouring pair is at least 17 CIE76 units apart (the
+#: tightest is #3730a3 -> #1d4ed8 at 17.5), checked in colour_test, so no two
+#: neighbours read as the same colour on screen. Lightness is not monotonic and
+#: is not meant to be - a rainbow orders by hue, which is what makes small
+#: depth changes jump out and equally what makes it a poor choice for judging
+#: magnitude at a glance. Bathy and Viridis are there for that.
+_RAINBOW_WIDE_STOPS = (
+    (0.0000, "#3b0764"), (0.0667, "#5b21b6"), (0.1333, "#3730a3"),
+    (0.2000, "#1d4ed8"), (0.2667, "#0284c7"), (0.3333, "#0891b2"),
+    (0.4000, "#0d9488"), (0.4667, "#15803d"), (0.5333, "#4d9a1f"),
+    (0.6000, "#84cc16"), (0.6667, "#d4d420"), (0.7333, "#facc15"),
+    (0.8000, "#f59e0b"), (0.8667, "#ea580c"), (0.9333, "#dc2626"),
+    (1.0000, "#7f1d1d"),
+)
+
 #: Offered when colouring by depth, in menu order.
 DEPTH_RAMPS = {
     "Bathy": _cmap("bathy", _BATHY),
     "Rainbow": _cmap("bathy_rainbow", _RAINBOW_STOPS),
+    "Rainbow wide": _cmap("bathy_rainbow_wide", _RAINBOW_WIDE_STOPS),
     "Turbo": "turbo",
     "Spectral": "Spectral_r",
     "Ocean": "ocean",
