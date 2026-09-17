@@ -83,6 +83,31 @@ def go():
     win.view.reset_view(); pump(300)
     win.view.plotter.screenshot(os.path.join(OUT, "shp_3d.png"))
 
+    # Changing Mesh detail reloads the grid, which drops everything draped on
+    # the terrain. The layers have to come back by themselves, colour and all.
+    win.view.set_overlay_colour("EGN10_Preplot_SHP", "#00ffcc")
+    win._save_overlay_list(); pump(200)
+    before = win.view.overlays["EGN10_Preplot_SHP"].n_vertices
+    detail_before = win.detail_c.currentText()
+    other = "Low (0.4 M cells)" if detail_before != "Low (0.4 M cells)"         else "High (3 M cells)"
+    win.detail_c.setCurrentText(other)
+    for _ in range(600):
+        pump(100)
+        if win.view.surface is not None and win.ov_list.count():
+            break
+    check("mesh detail actually changed", win.detail_c.currentText() == other,
+          f"{detail_before} -> {win.detail_c.currentText()}")
+    lay2 = win.view.overlays.get("EGN10_Preplot_SHP")
+    check("overlay survives a Mesh detail change", lay2 is not None,
+          str(list(win.view.overlays)))
+    check("still listed once", win.ov_list.count() == 1, str(win.ov_list.count()))
+    if lay2:
+        check("re-draped with the same vertices", lay2.n_vertices == before,
+              f"{before} -> {lay2.n_vertices}")
+        check("keeps its colour", lay2.color == "#00ffcc", lay2.color)
+    check("and is drawn again",
+          "ov:EGN10_Preplot_SHP" in win.view.plotter.renderer.actors)
+
     win.ov_list.setCurrentRow(0)
     win.remove_overlay(); pump(200)
     check("remove clears scene and list",

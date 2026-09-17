@@ -537,6 +537,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_path(self, path: str):
         if self._loader is not None and self._loader.isRunning():
             return
+        # Overlays are draped on the terrain, so loading a grid drops them.
+        # Remember them and put them back once the new surface is up -
+        # otherwise every change of Mesh detail costs you your shapefiles.
+        # Anything already queued (the startup restore) wins over this.
+        if self._restore_overlays is None:
+            self._restore_overlays = self._overlay_entries()
         self.prog = QtWidgets.QProgressDialog("Reading grid…", "", 0, 100, self)
         self.prog.setCancelButton(None)
         self.prog.setWindowTitle(os.path.basename(path))
@@ -591,8 +597,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_measure()
         if self._restore_overlays:
             wanted, self._restore_overlays = self._restore_overlays, None
+            lost = []
             for p, colour in wanted:
-                self.add_overlay_path(p, remember=False, color=colour)
+                if not self.add_overlay_path(p, remember=False, color=colour,
+                                             quiet=True):
+                    lost.append(os.path.basename(p))
+            if lost:
+                # A layer that does not reach the new grid is worth a line, not
+                # a dialog per file.
+                self.statusBar().showMessage(
+                    "Overlay not on this grid, dropped: " + ", ".join(lost), 8000)
+        self._restore_overlays = None
 
     def _load_failed(self, msg):
         self.prog.close()
@@ -713,12 +728,14 @@ class MainWindow(QtWidgets.QMainWindow):
             prefs.set_last_dir("shp", path)
             self.add_overlay_path(path)
 
-    def add_overlay_path(self, path, remember=True, color=None):
+    def add_overlay_path(self, path, remember=True, color=None, quiet=False):
+        """Load a shapefile onto the terrain. True if it landed."""
         if self.view.surface is None:
-            QtWidgets.QMessageBox.information(
-                self, "Load a grid first",
-                "Overlays are draped on the terrain, so a grid has to be open.")
-            return
+            if not quiet:
+                QtWidgets.QMessageBox.information(
+                    self, "Load a grid first",
+                    "Overlays are draped on the terrain, so a grid has to be open.")
+            return False
         colour = color or vectors.PALETTE[
             len(self.view.overlays) % len(vectors.PALETTE)]
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -726,14 +743,17 @@ class MainWindow(QtWidgets.QMainWindow):
             layer = vectors.load(path, self.view.surface, color=colour)
         except vectors.VectorError as exc:
             QtWidgets.QApplication.restoreOverrideCursor()
-            QtWidgets.QMessageBox.warning(self, "Could not add overlay", str(exc))
-            return
+            if not quiet:
+                QtWidgets.QMessageBox.warning(self, "Could not add overlay",
+                                              str(exc))
+            return False
         except Exception as exc:
             QtWidgets.QApplication.restoreOverrideCursor()
-            QtWidgets.QMessageBox.critical(
-                self, "Could not add overlay",
-                str(exc) + "\n\n" + traceback.format_exc(limit=3))
-            return
+            if not quiet:
+                QtWidgets.QMessageBox.critical(
+                    self, "Could not add overlay",
+                    str(exc) + "\n\n" + traceback.format_exc(limit=3))
+            return False
         QtWidgets.QApplication.restoreOverrideCursor()
 
         self.view.remove_overlay(layer.name)
@@ -758,6 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
         note = "" if layer.dropped == 0 else f"  •  {layer.dropped:,} vertices off grid"
         self.statusBar().showMessage(
             f"Overlay {layer.name}: {layer.summary()}  •  {layer.crs_name}{note}", 8000)
+        return True
 
     def _trail_changed(self, text):
         self.view.targets.set_trail_seconds(TRAILS.get(text, 600))
@@ -808,13 +829,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ov_list.takeItem(self.ov_list.row(item))
         self._save_overlay_list()
 
-    def _save_overlay_list(self):
+    def _overlay_entries(self):
+        """(path, colour) for every layer, in the order they are listed."""
         entries = []
         for i in range(self.ov_list.count()):
             layer = self.view.overlays.get(self.ov_list.item(i).text())
             if layer is not None:
                 entries.append((layer.path, layer.color))
-        prefs.set_overlays(entries)
+        return entries
+
+    def _save_overlay_list(self):
+        prefs.set_overlays(self._overlay_entries())
 
     # --------------------------------------------------------- position feed
 

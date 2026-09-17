@@ -177,9 +177,15 @@ neither stops the shapes loading. Labels are drawn for point layers when a
 `.dbf` is present and carries a `NAME`, `LABEL`, `ID`, `BLOCK` or `AREA` field.
 
 Vertices with no terrain under them are dropped and counted, so a file that
-overhangs the grid loads with the part that fits rather than failing. Overlays
-are cleared when a different grid is opened, since they were draped on the old
-one. Requires `pyshp`.
+overhangs the grid loads with the part that fits rather than failing.
+
+Overlays survive a grid reload. Changing **Mesh detail** reloads the file, and
+anything draped on the terrain goes with it, so each layer's path and colour
+are remembered and re-draped onto the new surface automatically. Depths come
+from the native-resolution probe, which Mesh detail does not touch, so they
+land in exactly the same places. Layers that fall outside a newly opened grid
+are dropped with a line in the status bar naming them, rather than a dialog per
+file. Requires `pyshp`.
 
 ## Live positions and depths over UDP
 
