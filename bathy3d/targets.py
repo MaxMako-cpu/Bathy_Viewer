@@ -94,10 +94,19 @@ def draw_on_top(actor, bias: int = ON_TOP_MARK) -> None:
 
 @dataclass
 class Target:
+    #: The slot: what the feed identifies this body by, and what every actor,
+    #: tether pairing and calibration tie-in is keyed on. Never changes.
     name: str
+    #: What the operator sees. Renaming a body changes only this, so a vessel
+    #: can call its ROV whatever it likes without moving anything structural.
+    label: str = ""
     color: str = "#f2c14e"
     kind: str = "rov"
     size: float = 1.0
+
+    @property
+    def shown(self) -> str:
+        return self.label or self.name
     x: float = float("nan")  # CRS
     y: float = float("nan")
     z: float = float("nan")  # elevation, metres, positive up
@@ -124,6 +133,9 @@ class TargetLayer:
         self.surface = surface
         self.trail_seconds = float(trail_seconds)
         self.targets: dict[str, Target] = {}
+        #: Per-slot label and colour overrides. Survives clear(), so a grid
+        #: reload does not put every vehicle back to its shipped name.
+        self.styles: dict[str, dict] = {}
         self._actors: dict[str, dict] = {}
         self._scale = 1.0  # metres per glyph unit, from the raster extent
         self._ve = 1.0
@@ -151,9 +163,33 @@ class TargetLayer:
     def ensure(self, name: str, **style) -> Target:
         if name not in self.targets:
             base = dict(DEFAULT_TARGETS.get(name, {}))
+            base.update(self.styles.get(name, {}))
             base.update(style)
             self.targets[name] = Target(name=name, **base)
         return self.targets[name]
+
+    def set_styles(self, styles: dict) -> None:
+        """Rename and recolour bodies, including ones already on screen.
+
+        A dot's actor is re-added on every ``_place``, so a colour change
+        would take by itself; a cylinder's is built once and kept, and a
+        label is baked into its actor. Rather than remember which is which,
+        every actor for a restyled body is dropped and rebuilt.
+        """
+        self.styles = {k: dict(v) for k, v in (styles or {}).items()}
+        for name, style in self.styles.items():
+            t = self.targets.get(name)
+            if t is None:
+                continue
+            for key, value in style.items():
+                setattr(t, key, value)
+            for actor in (self._actors.pop(name, None) or {}).values():
+                try:
+                    self.plotter.remove_actor(actor, render=False)
+                except Exception:
+                    pass
+        for t in self.targets.values():
+            self._place(t)
 
     # ----------------------------------------------------------------- update
 
@@ -371,7 +407,7 @@ class TargetLayer:
         draw_on_top(bag["marker"])
 
         bag["label"] = self.plotter.add_point_labels(
-            np.array([[lx, ly, lz]], dtype=float), [t.name], name=f"lbl:{t.name}",
+            np.array([[lx, ly, lz]], dtype=float), [t.shown], name=f"lbl:{t.name}",
             font_size=11, text_color=t.color, shape=None, show_points=False,
             always_visible=True, render=False,
         )

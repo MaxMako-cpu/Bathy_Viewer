@@ -140,6 +140,7 @@ depth_test.py     five-body checks: both feeds, depths, TMS, tethers
 slopebox_test.py  slope box: native resolution, halo, picking, limits
 crs_test.py       other projections: UTM 16N/31N/15S/56S and geographic
 calib_test.py     depth calibration: the fit, then tie-ins through the window
+vehicles_test.py  renaming: labels, colours, and that no slot moved
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -148,6 +149,7 @@ bathy3d/
   feed.py         UDP listener + record parser
   vectors.py      shapefile reader; reproject, densify, drape
   calib.py        depth tie-in points and the correction fitted to them
+  vehicles.py     per-vessel names and colours, keyed on the feed slots
   prefs.py        what is remembered between runs
   ramps.py        colour ramps
   mainwindow.py   PySide6 window, panels, menus, loader thread
@@ -165,9 +167,10 @@ errors. **File › Forget remembered files** clears the grid and overlays so the
 next start opens empty; the remembered folders survive that. Passing a grid on
 the command line takes precedence over the remembered one.
 
-Depth calibration tie-in points come back too, along with whether the
-correction was switched on — though a remembered "on" with no points left
-unticks itself rather than showing a switch that corrects nothing.
+Vehicle names and colours come back, and so do depth calibration tie-in
+points, along with whether the correction was switched on — though a
+remembered "on" with no points left unticks itself rather than showing a
+switch that corrects nothing.
 
 Settings live in QSettings — the registry on Windows — so there is no file to
 mislay. Setting `BATHY3D_PROFILE` puts a run in its own settings profile; every
@@ -365,6 +368,43 @@ carry a depth and are not a TMS. Nothing else needs changing.
 `python -m bathy3d.feed 6451` sniffs the position feed and `python -m
 bathy3d.feed 6452` the depth feed, printing each datagram and what it decoded
 to. Use `-u` or Python buffers the output and it looks dead.
+
+## Naming the vehicles
+
+The app moves between vessels, and every vessel calls its vehicles something
+different. **Vehicles › Names and colours…** renames each body and sets the
+colour it is drawn in — markers, labels, trails, tethers, the Live positions
+table and the calibration dialog all follow.
+
+**A rename is only a rename.** The names in `feed.ORDER` are not really names,
+they are *slots* — one per pair of fields in the wire record — and the program
+is keyed on them throughout: `TETHERS` pairs a TMS to its ROV by slot, the
+vessel is recognised by slot, every actor in the scene is named after one, and
+a calibration tie-in stores the slot it was taken on, on disk, outliving the
+session. So the slot never changes; what changes is the label drawn over it.
+Tie in as UHD333, rename it Hercules, and the point still reads correctly —
+under the new name.
+
+A **TMS is not given a colour.** It inherits its ROV's, darkened, which is
+what keeps the pairing readable when the two bodies are metres apart, and it
+cannot fall out of step because there is only ever one colour to set. Its
+swatch in the dialog is disabled and says which vehicle to set instead.
+
+The two pairs this shipped with were picked by eye and follow no single rule —
+the red dropped its saturation to 0.63 of the ROV's while the green kept it,
+and their lightness ratios were 0.78 and 0.69. Only the darkening is common to
+both, so only the darkening is applied (`TMS_DARKEN`, lightness × 0.70, in the
+same hue): it is the part that works for any colour rather than for those two.
+Expect a shade near the original pairs, not identical to them.
+
+Names are capped at 24 characters and tidied of stray whitespace; blank puts
+the slot's own name back. **Reset to default names** returns everything to
+stock. Only what differs from stock is stored, so an untouched fleet writes
+nothing, and no TMS colour is ever stored — it is derived every time it is
+asked for.
+
+The number of bodies is fixed at five, because the wire format is: ten
+position fields and four depth fields. Renaming does not change that.
 
 ## Depth calibration
 

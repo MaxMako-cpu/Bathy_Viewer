@@ -18,8 +18,8 @@ from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    UMBILICALS, explain)
 from .measure import compass
 from . import ramps
-from .targets import DEFAULT_TARGETS, DEFAULT_TRAIL_SECONDS
-from . import prefs, vectors
+from .targets import DEFAULT_TRAIL_SECONDS
+from . import prefs, vectors, vehicles
 from .viewer import TerrainView
 
 OPEN_FILTER = (
@@ -126,6 +126,107 @@ class Loader(QtCore.QThread):
             self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
 
 
+class FleetDialog(QtWidgets.QDialog):
+    """Rename and recolour the bodies for whichever vessel this is.
+
+    What changes here is only what is drawn. Each row's *slot* - the position
+    in the wire record that the feed, the tether pairing and every calibration
+    tie-in are keyed on - is shown but cannot be edited, because moving it
+    would orphan all three.
+    """
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Vehicles - names and colours")
+        self.setModal(False)
+        self.resize(560, 330)
+        self._rows = {}
+
+        v = QtWidgets.QVBoxLayout(self)
+        hint = QtWidgets.QLabel(
+            "Rename a vehicle to whatever this vessel calls it. The name on "
+            "the left is the feed slot and never changes, so calibration "
+            "tie-ins and tethers survive a rename.")
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        v.addWidget(hint)
+
+        form = QtWidgets.QGridLayout()
+        for col, head in enumerate(("Slot", "Name", "Colour")):
+            lab = QtWidgets.QLabel(head)
+            lab.setObjectName("hint")
+            form.addWidget(lab, 0, col)
+        for r, slot in enumerate(ORDER, start=1):
+            form.addWidget(QtWidgets.QLabel(slot), r, 0)
+            edit = QtWidgets.QLineEdit()
+            edit.setMaxLength(24)
+            edit.editingFinished.connect(
+                lambda s=slot: self._renamed(s))
+            form.addWidget(edit, r, 1)
+            swatch = QtWidgets.QPushButton()
+            swatch.setFixedWidth(120)
+            if slot in vehicles.FOLLOWS:
+                # A TMS has no colour of its own: it is its ROV's, darkened,
+                # which is what keeps the pairing readable when the two bodies
+                # are metres apart. Offering a picker here would let them
+                # drift apart with nothing to put them back.
+                swatch.setEnabled(False)
+                swatch.setToolTip(
+                    f"Follows {vehicles.FOLLOWS[slot]}, darkened - "
+                    "set that vehicle's colour instead.")
+            else:
+                swatch.clicked.connect(lambda _=False, s=slot: self._pick(s))
+            form.addWidget(swatch, r, 2)
+            self._rows[slot] = (edit, swatch)
+        v.addLayout(form)
+        v.addStretch(1)
+
+        row = QtWidgets.QHBoxLayout()
+        reset = QtWidgets.QPushButton("Reset to defaults")
+        reset.clicked.connect(self.win.reset_fleet)
+        row.addWidget(reset)
+        row.addStretch(1)
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(self.hide)
+        row.addWidget(close)
+        v.addLayout(row)
+
+    def refresh(self):
+        for slot, (edit, swatch) in self._rows.items():
+            label = self.win.fleet.label(slot)
+            if edit.text() != label:
+                edit.blockSignals(True)
+                edit.setText(label)
+                edit.blockSignals(False)
+            colour = self.win.fleet.colour(slot)
+            # Readable either way round: white text on a dark pick, black on
+            # a pale one, rather than a swatch whose own label vanishes.
+            ink = "#101010" if _is_pale(colour) else "#ffffff"
+            swatch.setText(colour)
+            swatch.setStyleSheet(
+                f"background: {colour}; color: {ink}; border: 1px solid #2b414a;")
+
+    def _renamed(self, slot):
+        edit, _ = self._rows[slot]
+        self.win.fleet.set_label(slot, edit.text())
+        self.win.apply_fleet()
+
+    def _pick(self, slot):
+        current = QtGui.QColor(self.win.fleet.colour(slot))
+        chosen = QtWidgets.QColorDialog.getColor(
+            current, self, f"Colour for {self.win.fleet.label(slot)}")
+        if chosen.isValid():
+            self.win.fleet.set_colour(slot, chosen.name())
+            self.win.apply_fleet()
+
+
+def _is_pale(colour: str) -> bool:
+    """Rough perceived brightness, for choosing ink over a swatch."""
+    c = QtGui.QColor(colour)
+    return (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) > 150
+
+
 class CalibDialog(QtWidgets.QDialog):
     """The tie-in points, what they add up to, and a way to drop a bad one.
 
@@ -184,7 +285,9 @@ class CalibDialog(QtWidgets.QDialog):
         for r, p in enumerate(c.points):
             resid = (p.grid_depth - m.apply(p.feed_depth)) if m.on else None
             when = time.strftime("%d %b %H:%M", time.localtime(p.when))
-            cells = [p.vehicle, f"{p.x:,.2f}", f"{p.y:,.2f}",
+            # The point stores the slot, so a body renamed after it was tied
+            # in still shows up here - under its new name.
+            cells = [self.win.fleet.label(p.vehicle), f"{p.x:,.2f}", f"{p.y:,.2f}",
                      f"{p.grid_depth:,.1f}", f"{p.feed_depth:,.1f}",
                      f"{p.offset:+.1f}",
                      "--" if resid is None else f"{resid:+.1f}", when]
@@ -195,7 +298,7 @@ class CalibDialog(QtWidgets.QDialog):
                                           | QtCore.Qt.AlignVCenter)
                 else:
                     item.setForeground(QtGui.QColor(
-                        DEFAULT_TARGETS.get(p.vehicle, {}).get("color", "#e3eef1")))
+                        self.win.fleet.colour(p.vehicle)))
                 # A point sitting far off its own fit is the one to suspect.
                 if col == 6 and resid is not None and abs(resid) > 5.0:
                     item.setForeground(QtGui.QColor("#e8663d"))
@@ -240,7 +343,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._framed_feed = None
         self._ramp_choice = {}
         self._patch = None
-        # Built before the menu, which needs it to set the checkbox state.
+        # Both built before the panels and menus, which draw the labels and
+        # colours these hold.
+        self._closing = False
+        self.fleet = vehicles.Fleet()
+        self.fleet.load(prefs.fleet())
+        self.view.targets.set_styles(self.fleet.styles())
+        self._fleet_dialog = None
         self.calib = calib.Calibration(prefs.view("calib/on"))
         self.calib.load(prefs.tiepoints())
         self._calib_dialog = None
@@ -629,8 +738,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QHeaderView.ResizeToContents)
         self.tgt_table.setFixedHeight(28 + 24 * len(ORDER))
         for r, nm in enumerate(ORDER):
-            item = QtWidgets.QTableWidgetItem(nm)
-            item.setForeground(QtGui.QColor(DEFAULT_TARGETS[nm]["color"]))
+            item = QtWidgets.QTableWidgetItem(self.fleet.label(nm))
+            item.setForeground(QtGui.QColor(self.fleet.colour(nm)))
             self.tgt_table.setItem(r, 0, item)
             for c in range(1, 7):
                 cell = QtWidgets.QTableWidgetItem("--")
@@ -764,17 +873,77 @@ class MainWindow(QtWidgets.QMainWindow):
         # it can never witness the seabed a tie-in has to be measured against.
         self.act_tie = {}
         for nm in BOTTOM_ORDER:
-            act = cm.addAction(f"Tie in {nm} (on bottom now)")
-            act.setToolTip(
-                f"Record what the grid and the feed each say at {nm}'s "
-                "position right now. Press only when it is on the bottom.")
+            act = cm.addAction("")
             act.triggered.connect(lambda _=False, n=nm: self.tie_in(n))
             self.act_tie[nm] = act
+        self._relabel_tie_actions()
         cm.addSeparator()
         cm.addAction("Tie-in &points…").triggered.connect(self.show_calib)
         self.act_calib_clear = cm.addAction("Clear all tie-in points")
         self.act_calib_clear.triggered.connect(self.clear_tiepoints)
         self._sync_calib_menu()
+
+        vm = self.menuBar().addMenu("Ve&hicles")
+        vm.addAction("&Names and colours…").triggered.connect(self.show_fleet)
+        vm.addSeparator()
+        vm.addAction("&Reset to default names").triggered.connect(
+            self.reset_fleet)
+
+    def _relabel_tie_actions(self):
+        """Menu entries follow a rename, so they name the vehicle you know."""
+        for nm, act in self.act_tie.items():
+            label = self.fleet.label(nm)
+            act.setText(f"Tie in {label} (on bottom now)")
+            act.setToolTip(
+                f"Record what the grid and the feed each say at {label}'s "
+                "position right now. Press only when it is on the bottom.")
+
+    # -------------------------------------------------------------- vehicles
+
+    def show_fleet(self):
+        if self._fleet_dialog is None:
+            self._fleet_dialog = FleetDialog(self)
+        self._fleet_dialog.refresh()
+        self._fleet_dialog.show()
+        self._fleet_dialog.raise_()
+        self._fleet_dialog.activateWindow()
+
+    def reset_fleet(self):
+        if not self.fleet.renamed():
+            return
+        if QtWidgets.QMessageBox.question(
+                self, "Reset vehicles",
+                "Put every vehicle back to its default name and colour?"
+                ) != QtWidgets.QMessageBox.Yes:
+            return
+        self.fleet.reset()
+        self.apply_fleet()
+
+    def apply_fleet(self):
+        """Push labels and colours everywhere they are drawn, and remember them.
+
+        Renaming touches no slot, so nothing here has to rebuild the feed, the
+        tether pairing or the calibration points - they are all keyed on the
+        slot and simply start reading out under a different name.
+        """
+        if getattr(self, "_closing", False):
+            return          # teardown: the widgets below are already gone
+        try:
+            prefs.set_fleet(self.fleet.encode())
+        except Exception:
+            pass
+        self.view.targets.set_styles(self.fleet.styles())
+        for r, nm in enumerate(ORDER):
+            item = self.tgt_table.item(r, 0)
+            if item is not None:
+                item.setText(self.fleet.label(nm))
+                item.setForeground(QtGui.QColor(self.fleet.colour(nm)))
+        self._relabel_tie_actions()
+        if self._calib_dialog is not None:
+            self._calib_dialog.refresh()
+        if self._fleet_dialog is not None:
+            self._fleet_dialog.refresh()
+        self.view.plotter.render()
 
     def _sync_calib_menu(self):
         """Grey out what cannot be done yet, and say why in the tooltip."""
@@ -1562,6 +1731,16 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----------------------------------------------------------------- close
 
     def closeEvent(self, e):
+        # Close the modeless dialogs first. A line edit losing focus during
+        # teardown emits editingFinished, which lands in apply_fleet after the
+        # table it wants has already gone - so the flag is set before anything
+        # else, and the dialogs are shut while the window is still whole.
+        self._closing = True
+        for attr in ("_fleet_dialog", "_calib_dialog"):
+            dlg = getattr(self, attr, None)
+            if dlg is not None:
+                dlg.close()
+                setattr(self, attr, None)
         self._save_prefs()
         if self._demo:
             self._demo.stop()

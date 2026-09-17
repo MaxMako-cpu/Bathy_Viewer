@@ -123,6 +123,18 @@ def set_tiepoints(rows) -> None:
     set_value("calib/points", [str(r) for r in rows])
 
 
+def fleet() -> list:
+    """Encoded vehicle labels and colours; empty means everything is stock."""
+    v = settings().value("fleet/names", [])
+    if isinstance(v, str):
+        v = [v]
+    return [str(x) for x in (v or []) if x]
+
+
+def set_fleet(rows) -> None:
+    set_value("fleet/names", [str(r) for r in rows])
+
+
 def restore_on_start() -> bool:
     return _get("session/restore", True, bool)
 
