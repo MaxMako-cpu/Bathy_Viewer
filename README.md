@@ -267,8 +267,20 @@ file. Requires `pyshp`.
 
 ## Live positions and depths over UDP
 
-**Position feed** panel: set the two ports and press *Start listening*. A grid
-must be open first, since positions are placed on the terrain.
+**Feed › Start listening** binds both ports and starts placing vehicles on the
+terrain. A grid must be open first, since positions are placed on it. The ports
+themselves are in **Feed › Ports and status…**, along with what the listener is
+currently doing and its packet and record counts.
+
+Those are settings, set once on arrival at a vessel, which is why they are in
+the menu bar. What you use while the job runs — *Show targets*, *Show TMS*,
+*Zoom to targets*, *Follow targets*, the trail retention and *Clear trails* —
+stays in the **Targets** panel where it is one click away.
+
+The dialog and the menu entry are the same switch: throw either and the other
+follows. Since the status lives in the dialog and the dialog is usually shut, a
+port that will not bind is also reported in the status bar, and the menu entry
+unticks itself rather than sitting on while nothing arrives.
 
 Positions (default **6451**), about 1 Hz:
 

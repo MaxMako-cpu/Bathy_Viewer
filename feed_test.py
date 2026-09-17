@@ -115,7 +115,7 @@ def part1_framing():
 
 def part2_live(grid):
     print("\nlive, through the real listener:")
-    from PySide6 import QtWidgets
+    from PySide6 import QtGui, QtWidgets
     from bathy3d.feed import ORDER
     from bathy3d.mainwindow import MainWindow
 
@@ -182,6 +182,42 @@ def part2_live(grid):
           all(len(t.trail) >= 2 for t in win.view.targets.targets.values()),
           str({k: len(v.trail) for k, v in win.view.targets.targets.items()}))
     check("framed the vehicles on the first fix", win._framed_feed is True)
+
+    print("\nthe feed's settings live in the menu bar:")
+    menus = [a.text() for a in win.menuBar().actions()]
+    check("there is a Feed menu", any("Feed" in m for m in menus), str(menus))
+    check("the listen switch is a menu action, not a panel button",
+          isinstance(win.listen_b, QtGui.QAction), type(win.listen_b).__name__)
+    check("the ports left the panel",
+          isinstance(win.port_s.window(), QtWidgets.QDialog)
+          or win.port_s.parent() is None,
+          type(win.port_s.window()).__name__)
+
+    win.show_feed()
+    pump(400)
+    dlg = win._feed_dialog
+    # One set of widgets, not copies: preferences restore into these at
+    # startup, long before the dialog exists, and the listener writes its
+    # status to them whether anyone has opened it or not.
+    check("the dialog adopted the real port boxes",
+          dlg.isAncestorOf(win.port_s) and dlg.isAncestorOf(win.dport_s))
+    check("and the real status labels",
+          dlg.isAncestorOf(win.feed_status) and dlg.isAncestorOf(win.feed_stats))
+    check("its button reflects the menu switch, still listening",
+          dlg.listen_btn.isChecked() and win.listen_b.isChecked()
+          and dlg.listen_btn.text() == "Stop listening", dlg.listen_btn.text())
+
+    # Both are the same switch, so throwing either has to move the other.
+    dlg.listen_btn.click()
+    pump(700)
+    check("the dialog button stops the feed too", not win.listen_b.isChecked())
+    check("and relabels itself", dlg.listen_btn.text() == "Start listening",
+          dlg.listen_btn.text())
+    win.listen_b.setChecked(True)
+    pump(700)
+    check("the menu switch moves the dialog button back",
+          dlg.listen_btn.isChecked() and dlg.listen_btn.text() == "Stop listening",
+          dlg.listen_btn.text())
 
     sock.close()
     win.listen_b.setChecked(False)

@@ -126,6 +126,69 @@ class Loader(QtCore.QThread):
             self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
 
 
+class FeedDialog(QtWidgets.QDialog):
+    """The two UDP ports and what the listener is currently doing.
+
+    It adopts the window's own port and status widgets rather than making its
+    own, so there is one of each: saved preferences restore into them at
+    startup, before this dialog has ever been built, and the listener writes
+    its status straight to them whether anyone is looking or not.
+    """
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Position feed - ports and status")
+        self.setModal(False)
+        self.resize(430, 220)
+
+        v = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QGridLayout()
+        form.addWidget(win._key("Positions"), 0, 0)
+        form.addWidget(win.port_s, 0, 1)
+        form.addWidget(win._key("Depths"), 1, 0)
+        form.addWidget(win.dport_s, 1, 1)
+        form.setColumnStretch(1, 1)
+        v.addLayout(form)
+
+        hint = QtWidgets.QLabel(
+            "A grid must be open first - positions are placed on the terrain. "
+            "Eastings and northings are read in the loaded grid's CRS.")
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        v.addWidget(hint)
+
+        v.addWidget(win.feed_status)
+        v.addWidget(win.feed_stats)
+        v.addStretch(1)
+
+        row = QtWidgets.QHBoxLayout()
+        self.listen_btn = QtWidgets.QPushButton()
+        self.listen_btn.setCheckable(True)
+        self.listen_btn.clicked.connect(
+            lambda on: win.listen_b.setChecked(on))
+        row.addWidget(self.listen_btn)
+        row.addStretch(1)
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(self.hide)
+        row.addWidget(close)
+        v.addLayout(row)
+
+        # The menu entry is the same switch, so the button has to follow it
+        # however it was thrown.
+        win.listen_b.toggled.connect(self._sync)
+
+    def _sync(self, on=None):
+        checked = self.win.listen_b.isChecked()
+        self.listen_btn.blockSignals(True)
+        self.listen_btn.setChecked(checked)
+        self.listen_btn.blockSignals(False)
+        self.listen_btn.setText("Stop listening" if checked else "Start listening")
+
+    def refresh(self):
+        self._sync()
+
+
 class FleetDialog(QtWidgets.QDialog):
     """Rename and recolour the bodies for whichever vessel this is.
 
@@ -350,6 +413,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fleet.load(prefs.fleet())
         self.view.targets.set_styles(self.fleet.styles())
         self._fleet_dialog = None
+        self._feed_dialog = None
         self.calib = calib.Calibration(prefs.view("calib/on"))
         self.calib.load(prefs.tiepoints())
         # Tie-ins outlive a session, so points saved before the slots were made
@@ -510,38 +574,27 @@ class MainWindow(QtWidgets.QMainWindow):
         ol.addWidget(self.ov_hint)
         v.addWidget(ov)
 
-        tg = QtWidgets.QGroupBox("Position feed")
-        tl = QtWidgets.QVBoxLayout(tg)
-        prow = QtWidgets.QWidget()
-        ph = QtWidgets.QHBoxLayout(prow)
-        ph.setContentsMargins(0, 0, 0, 0)
-        ph.addWidget(self._key("Positions"))
+        # The feed's own settings live in the Feed menu, so these four are not
+        # added to any panel layout - the dialog adopts them when it is first
+        # opened. They are built here, eagerly, because saved preferences are
+        # restored into them at startup and they must exist by then whether or
+        # not anyone has opened the dialog.
         self.port_s = QtWidgets.QSpinBox()
         self.port_s.setRange(1, 65535)
         self.port_s.setValue(DEFAULT_PORT)
         self.port_s.setGroupSeparatorShown(False)
-        ph.addWidget(self.port_s, 1)
-        ph.addWidget(self._key("Depths"))
         self.dport_s = QtWidgets.QSpinBox()
         self.dport_s.setRange(1, 65535)
         self.dport_s.setValue(DEFAULT_DEPTH_PORT)
         self.dport_s.setGroupSeparatorShown(False)
-        ph.addWidget(self.dport_s, 1)
-        tl.addWidget(prow)
-
-        self.listen_b = QtWidgets.QPushButton("Start listening")
-        self.listen_b.setCheckable(True)
-        self.listen_b.toggled.connect(self.toggle_feed)
-        tl.addWidget(self.listen_b)
-
         self.feed_status = QtWidgets.QLabel("Stopped")
         self.feed_status.setObjectName("hint")
         self.feed_status.setWordWrap(True)
-        tl.addWidget(self.feed_status)
         self.feed_stats = QtWidgets.QLabel("")
         self.feed_stats.setObjectName("mono")
-        tl.addWidget(self.feed_stats)
 
+        tg = QtWidgets.QGroupBox("Targets")
+        tl = QtWidgets.QVBoxLayout(tg)
         self.tgt_b = QtWidgets.QPushButton("Show targets")
         self.tgt_b.setCheckable(True)
         self.tgt_b.setChecked(True)
@@ -886,6 +939,18 @@ class MainWindow(QtWidgets.QMainWindow):
         vm.addAction("&Reset to default names").triggered.connect(
             self.reset_fleet)
 
+        # A QAction, not a button, but it answers setChecked/isChecked/setText
+        # exactly as the panel button did - so toggle_feed and _feed_status did
+        # not have to change when it moved up here.
+        fm = self.menuBar().addMenu("&Feed")
+        self.listen_b = fm.addAction("Start listening")
+        self.listen_b.setCheckable(True)
+        self.listen_b.setToolTip(
+            "Bind both UDP ports and start placing vehicles on the terrain.")
+        self.listen_b.toggled.connect(self.toggle_feed)
+        fm.addSeparator()
+        fm.addAction("&Ports and status…").triggered.connect(self.show_feed)
+
     def _relabel_tie_actions(self):
         """Menu entries follow a rename, so they name the vehicle you know."""
         for nm, act in self.act_tie.items():
@@ -896,6 +961,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 "position right now. Press only when it is on the bottom.")
 
     # -------------------------------------------------------------- vehicles
+
+    def show_feed(self):
+        if self._feed_dialog is None:
+            self._feed_dialog = FeedDialog(self)
+        self._feed_dialog.refresh()
+        self._feed_dialog.show()
+        self._feed_dialog.raise_()
+        self._feed_dialog.activateWindow()
 
     def show_fleet(self):
         if self._fleet_dialog is None:
@@ -1432,6 +1505,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _feed_status(self, msg, ok):
         self.feed_status.setText(msg)
         self.feed_status.setStyleSheet("color: #7f98a1;" if ok else "color: #e8663d;")
+        if not ok and msg.startswith("Cannot bind"):
+            # The status itself lives in the dialog, which may well be shut.
+            # A port that would not bind has to be said somewhere the operator
+            # is actually looking, or the feed just silently never starts.
+            self.statusBar().showMessage(msg, 15000)
         if not ok and self.listen_b.isChecked() and msg.startswith("Cannot bind"):
             self.listen_b.setChecked(False)
         if not self.listen_b.isChecked():
@@ -1738,7 +1816,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # table it wants has already gone - so the flag is set before anything
         # else, and the dialogs are shut while the window is still whole.
         self._closing = True
-        for attr in ("_fleet_dialog", "_calib_dialog"):
+        for attr in ("_fleet_dialog", "_calib_dialog", "_feed_dialog"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 dlg.close()
