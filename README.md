@@ -92,6 +92,24 @@ line** table lists each leg's horizontal distance, depth change, gradient and
 bearing, with totals for horizontal, along-seabed and straight-chord distance.
 **Export CSV** writes the stations with cumulative distance.
 
+Bearing is given **twice**: `Brg°` in degrees, written the way a bearing is
+written on a plot — three digits, zero-padded, so `007.2` not `7.2` and a
+column of them lines up — and `Brg` as the compass point beside it. The point
+says roughly where at a glance, the degrees say exactly. A check confirms the
+two can never contradict each other: the printed degrees always fall inside the
+octant the printed compass point names.
+
+That table is set in larger type than the rest of the rail, because it is read
+off the screen and written down, often at arm's length from the console. The
+Live positions table keeps the compact size — it has seven columns and is
+glanced at, not transcribed. Its columns are sized to their contents rather
+than stretched to fill: six columns of 15px type divided evenly across the old
+286px rail truncated `4,940` to `4,9…` and chopped the header with it, so the
+right-hand rail is now 430px wide, which fits the widest leg a 130 km grid can
+produce. Spare width goes to the distance column, not the last one — stretching
+the last opened a gap between the degrees and the compass point that are meant
+to read as one thing.
+
 ## How it reads the grid
 
 Two grids are held at once:

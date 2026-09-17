@@ -17,6 +17,18 @@ def compass(bearing: float) -> str:
     return OCTANTS[int(round(bearing / 22.5)) % 16]
 
 
+def bearing_text(bearing: float) -> str:
+    """Degrees, written the way a bearing is written on a survey plot.
+
+    Three digits before the point and zero-padded - 007.2, not 7.2 - so a
+    column of them lines up and cannot be misread for something else. The
+    compass point beside it says roughly where at a glance; this says exactly.
+    """
+    if not math.isfinite(bearing):
+        return "--"
+    return f"{bearing % 360.0:05.1f}"
+
+
 @dataclass
 class Station:
     x: float  # CRS

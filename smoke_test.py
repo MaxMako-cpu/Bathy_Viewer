@@ -120,7 +120,27 @@ def main(path):
 
     # -- measuring ------------------------------------------------------------
     print("\nmeasuring:")
-    from bathy3d.measure import MeasureLine, Station, compass
+    from bathy3d.measure import MeasureLine, Station, bearing_text, compass
+
+    # Degrees beside the compass point, written the way a bearing is written
+    # on a plot: three digits, zero-padded, so a column of them lines up.
+    check("a bearing reads as three padded digits",
+          bearing_text(7.2) == "007.2" and bearing_text(137.44) == "137.4"
+          and bearing_text(0.0) == "000.0", bearing_text(7.2))
+    check("it wraps rather than printing 360 or a negative",
+          bearing_text(360.0) == "000.0" and bearing_text(-1.0) == "359.0",
+          f"{bearing_text(360.0)}, {bearing_text(-1.0)}")
+    check("and says nothing when there is no bearing",
+          bearing_text(float("nan")) == "--")
+    # The two columns describe one direction, so the printed degrees must fall
+    # in the octant the printed compass point names - otherwise the table
+    # contradicts itself and the reader has no way to tell which half is right.
+    from bathy3d.measure import OCTANTS
+    _disagree = [b for b in (0.0, 7.2, 37.4, 137.4, 226.8, 305.0, 359.9, 11.24)
+                 if OCTANTS[int(round(float(bearing_text(b)) / 22.5)) % 16]
+                 != compass(b)]
+    check("the degrees fall in the octant the compass point names",
+          not _disagree, f"disagree at {_disagree}")
 
     line = MeasureLine(surf)
     for fr, fc in ((0.35, 0.30), (0.45, 0.48), (0.38, 0.62)):

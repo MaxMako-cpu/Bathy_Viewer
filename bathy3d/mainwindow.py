@@ -16,7 +16,7 @@ from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
                    UMBILICALS, explain, slot_for as feed_slot_for)
-from .measure import compass
+from .measure import bearing_text, compass
 from . import ramps
 from .targets import DEFAULT_TRAIL_SECONDS
 from . import prefs, vectors, vehicles
@@ -90,6 +90,12 @@ QTableWidget { background: #121e23; gridline-color: #22343c; border: 1px solid #
     font-family: Consolas, monospace; font-size: 11px; }
 QHeaderView::section { background: #16242a; color: #8fa8b1; border: 0;
     border-bottom: 1px solid #22343c; padding: 4px; font-size: 10px; font-weight: 600; }
+/* The measured line is read off the screen and written down, often at arm's
+   length from the console, so it gets its own larger type. The live position
+   table keeps the compact size - it has seven columns and is glanced at, not
+   transcribed. */
+QTableWidget#measure { font-size: 15px; }
+QTableWidget#measure QHeaderView::section { font-size: 12px; padding: 5px 4px; }
 QStatusBar { background: #16242a; color: #8fa8b1; font-family: Consolas, monospace;
     font-size: 11px; }
 QMenuBar { background: #16242a; } QMenuBar::item:selected { background: #2b414a; }
@@ -708,12 +714,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
         mg = QtWidgets.QGroupBox("Measured line")
         mv = QtWidgets.QVBoxLayout(mg)
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Leg", "Horiz m", "dz m", "Grad°", "Brg"])
+        self.table = QtWidgets.QTableWidget(0, 6)
+        # Degrees and the compass point both: the point says roughly where at a
+        # glance, the degrees say exactly, and a survey line usually wants both.
+        self.table.setObjectName("measure")
+        self.table.setHorizontalHeaderLabels(
+            ["Leg", "Horiz m", "dz m", "Grad°", "Brg°", "Brg"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.table.setMinimumHeight(170)
+        # Sized to content, not stretched to fill. Six columns of 15px type
+        # divided evenly across the rail is about 50px each, which truncates
+        # "4,940" to "4,9..." and even chops the header - and a distance you
+        # cannot read is worse than a small one.
+        _mh = self.table.horizontalHeader()
+        _mh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        _mh.setStretchLastSection(False)
+        # Spare width goes to the distance, not to the last column. Stretching
+        # the last one opened a gap between the degrees and the compass point
+        # beside them, which are meant to be read as one thing.
+        _mh.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        # Taller than the old five columns needed: the bigger type wants more
+        # room per row, so the same few legs still fit without scrolling.
+        self.table.setMinimumHeight(210)
         mv.addWidget(self.table)
         self.totals = {}
         for k in ("Horizontal", "Along seabed", "Straight chord", "Net drop"):
@@ -803,7 +825,12 @@ class MainWindow(QtWidgets.QMainWindow):
         v.addStretch(1)
 
         dock.setWidget(w)
-        dock.setMinimumWidth(300)
+        # Wide enough for the measured line's six columns at their larger type
+        # without truncating a distance, which is the widest thing this rail
+        # has to carry. Measured: the columns need 352px, the group box and
+        # dock margins take about 60 more, and a leg on a 130 km grid runs to
+        # one digit wider than anything in the test line.
+        dock.setMinimumWidth(430)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         self.dock_readout = dock
 
@@ -1304,7 +1331,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.setRowCount(len(legs))
         for i, l in enumerate(legs):
             vals = (f"{i + 1}–{i + 2}", fmt(l.horizontal, 0),
-                    f"{l.dz:+,.1f}", f"{l.gradient:.2f}", compass(l.bearing))
+                    f"{l.dz:+,.1f}", f"{l.gradient:.2f}",
+                    bearing_text(l.bearing), compass(l.bearing))
             for c, text in enumerate(vals):
                 item = QtWidgets.QTableWidgetItem(text)
                 if c:
