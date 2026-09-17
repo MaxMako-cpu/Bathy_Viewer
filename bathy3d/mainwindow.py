@@ -41,6 +41,16 @@ TRAILS = {
     "24 hours": 86400,
 }
 
+#: Slope-box sizes offered in the UI, in metres. 0 means pick two corners.
+BOX_SIZES = {
+    "200 m": 200.0,
+    "500 m": 500.0,
+    "1 km": 1000.0,
+    "2 km": 2000.0,
+    "5 km": 5000.0,
+    "Two corners": 0.0,
+}
+
 DETAIL = {
     "Low (0.4 M cells)": 400_000,
     "Medium (1.5 M cells)": 1_500_000,
@@ -129,6 +139,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self.view)
         self.view.hovered.connect(self._on_hover)
         self.view.measureChanged.connect(self._refresh_measure)
+        self.view.patchChanged.connect(self._on_patch)
+        self.view.boxProgress.connect(
+            lambda msg: self.statusBar().showMessage(msg, 6000))
 
         self._loader = None
         self._demo = None
@@ -140,6 +153,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._depths = {}
         self._framed_feed = None
         self._ramp_choice = {}
+        self._patch = None
         self._build_controls()
         self._build_readout()
         self._build_menu()
@@ -217,8 +231,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.meas_b = QtWidgets.QPushButton("Measure mode")
         self.meas_b.setCheckable(True)
         self.meas_b.setChecked(True)
-        self.meas_b.toggled.connect(lambda on: setattr(self.view, "measuring", on))
+        self.meas_b.toggled.connect(self._measure_toggled)
         ml.addWidget(self.meas_b)
+        self.box_b = QtWidgets.QPushButton("Slope box")
+        self.box_b.setCheckable(True)
+        self.box_b.setToolTip(
+            "Click the seabed to recompute slope there at the grid's native "
+            "resolution, instead of the decimated display mesh.")
+        self.box_b.toggled.connect(self._box_toggled)
+        ml.addWidget(self.box_b)
+        brow = QtWidgets.QWidget()
+        bh = QtWidgets.QHBoxLayout(brow)
+        bh.setContentsMargins(0, 0, 0, 0)
+        bh.addWidget(self._key("Box size"))
+        self.box_c = QtWidgets.QComboBox()
+        self.box_c.addItems(list(BOX_SIZES))
+        self.box_c.currentTextChanged.connect(
+            lambda t: setattr(self.view, "box_size", BOX_SIZES.get(t, 200.0)))
+        bh.addWidget(self.box_c, 1)
+        ml.addWidget(brow)
         drow = QtWidgets.QWidget()
         dh = QtWidgets.QHBoxLayout(drow)
         dh.setContentsMargins(0, 0, 0, 0)
@@ -459,6 +490,44 @@ class MainWindow(QtWidgets.QMainWindow):
         mv.addWidget(btns)
         v.addWidget(mg)
 
+        sg = QtWidgets.QGroupBox("Slope box")
+        sv = QtWidgets.QVBoxLayout(sg)
+        self.patch_hint = QtWidgets.QLabel(
+            "Turn on Slope box and click the seabed.\n"
+            "Slope is recomputed there at native resolution.")
+        self.patch_hint.setObjectName("hint")
+        self.patch_hint.setWordWrap(True)
+        sv.addWidget(self.patch_hint)
+        pform = QtWidgets.QWidget()
+        pf = QtWidgets.QFormLayout(pform)
+        pf.setContentsMargins(0, 0, 0, 0)
+        self.patch_cells = {}
+        for k in ("Area", "Cells", "Mean slope", "P95 slope", "Max slope",
+                  "Relief", "Depth"):
+            lab = QtWidgets.QLabel("--")
+            lab.setObjectName("mono")
+            self.patch_cells[k] = lab
+            pf.addRow(self._key(k), lab)
+        trow = QtWidgets.QWidget()
+        th = QtWidgets.QHBoxLayout(trow)
+        th.setContentsMargins(0, 0, 0, 0)
+        th.addWidget(self._key("Over"))
+        self.thresh_s = QtWidgets.QSpinBox()
+        self.thresh_s.setRange(1, 89)
+        self.thresh_s.setSuffix("\u00b0")
+        self.thresh_s.setValue(15)
+        self.thresh_s.valueChanged.connect(lambda _v: self._refresh_patch())
+        th.addWidget(self.thresh_s)
+        self.patch_over = QtWidgets.QLabel("--")
+        self.patch_over.setObjectName("mono")
+        th.addWidget(self.patch_over, 1)
+        sv.addWidget(pform)
+        sv.addWidget(trow)
+        clr = QtWidgets.QPushButton("Clear box")
+        clr.clicked.connect(self.view.clear_patch)
+        sv.addWidget(clr)
+        v.addWidget(sg)
+
         lg = QtWidgets.QGroupBox("Live positions")
         lv = QtWidgets.QVBoxLayout(lg)
         self.tgt_table = QtWidgets.QTableWidget(len(ORDER), 7)
@@ -488,6 +557,61 @@ class MainWindow(QtWidgets.QMainWindow):
         dock.setMinimumWidth(300)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         self.dock_readout = dock
+
+    # ---------------------------------------------------------- slope box
+
+    def _measure_toggled(self, on):
+        self.view.measuring = on
+        if on and self.box_b.isChecked():
+            self.box_b.setChecked(False)
+
+    def _box_toggled(self, on):
+        """One click at a time belongs to one job, so the two modes exclude."""
+        self.view.set_box_mode(on)
+        if on and self.meas_b.isChecked():
+            self.meas_b.setChecked(False)
+        if on:
+            size = BOX_SIZES.get(self.box_c.currentText(), 200.0)
+            self.view.box_size = size
+            self.patch_hint.setText(
+                "Click the seabed to place a box."
+                if size else "Click two opposite corners on the seabed.")
+        elif self.view.patch is None:
+            self.patch_hint.setText(
+                "Turn on Slope box and click the seabed.\n"
+                "Slope is recomputed there at native resolution.")
+
+    def _on_patch(self, patch):
+        self._patch = patch
+        self._refresh_patch()
+
+    def _refresh_patch(self):
+        p = getattr(self, "_patch", None)
+        if p is None:
+            for lab in self.patch_cells.values():
+                lab.setText("--")
+            self.patch_over.setText("--")
+            return
+        st = p.stats()
+        if not st:
+            return
+        self.patch_cells["Area"].setText(
+            f"{st['side_x']:,.0f} \u00d7 {st['side_y']:,.0f} m")
+        self.patch_cells["Cells"].setText(
+            f"{st['valid']:,} @ {p.cell:.2f} m")
+        self.patch_cells["Mean slope"].setText(f"{st['mean']:.2f}\u00b0")
+        self.patch_cells["P95 slope"].setText(f"{st['p95']:.2f}\u00b0")
+        self.patch_cells["Max slope"].setText(f"{st['max']:.2f}\u00b0")
+        self.patch_cells["Relief"].setText(f"{st['relief']:,.1f} m")
+        self.patch_cells["Depth"].setText(
+            f"{st['depth_min']:,.1f} \u2013 {st['depth_max']:,.1f} m")
+        frac = p.fraction_over(float(self.thresh_s.value()))
+        self.patch_over.setText("--" if frac != frac else f"{frac * 100:.1f}% of it")
+        self.patch_hint.setText(
+            f"Native {p.cell:.2f} m over {st['side_x']:,.0f} \u00d7 "
+            f"{st['side_y']:,.0f} m - the display mesh gives this box about "
+            f"{max(st['side_x'] * st['side_y'] / (self.view.surface.cell_m ** 2), 0):.0f}"
+            " cells.")
 
     # ----------------------------------------------------------------- menus
 

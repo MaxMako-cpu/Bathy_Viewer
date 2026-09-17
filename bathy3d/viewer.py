@@ -13,6 +13,7 @@ from vtkmodules.vtkRenderingCore import vtkPropPicker
 
 from . import ramps
 from .measure import MeasureLine, Station
+from . import ramps as _ramps
 from .targets import BASE_POINT_PX, TargetLayer, draw_on_top
 
 #: Colour of measurement furniture.
@@ -26,6 +27,9 @@ STATION_POINT_PX = BASE_POINT_PX * 0.62
 #: Shapefile vertices are drawn smaller again - an overlay is context,
 #: and a preplot can run to thousands of points.
 OVERLAY_POINT_PX = 5.0
+
+#: Outline and corner marker for the slope box.
+BOX_COLOR = "#ffffff"
 
 #: Closest the camera may come to what it is looking at. Verified usable:
 #: with the pointer on the seabed the view still fills the frame at 1 m.
@@ -44,6 +48,8 @@ class TerrainView(QtWidgets.QWidget):
 
     hovered = QtCore.Signal(object)  # Probe | None
     measureChanged = QtCore.Signal()
+    patchChanged = QtCore.Signal(object)   # SlopePatch | None
+    boxProgress = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,6 +69,10 @@ class TerrainView(QtWidgets.QWidget):
         self.ramp_name = "Bathy"
         self.color_by = "Depth"
         self.measuring = True
+        self.box_mode = False        # clicks define a slope box, not a station
+        self.box_size = 200.0        # metres; 0 means pick two corners
+        self.patch = None            # the SlopePatch on screen, if any
+        self._box_first = None       # first corner while one is being picked
         self.left_action = "rotate"  # left-drag swings the map; shift-left slides it
         self.lock_z = True           # spin level, and no height drift
 
@@ -97,6 +107,8 @@ class TerrainView(QtWidgets.QWidget):
         self.surface = surface
         self.line = MeasureLine(surface)
         self.overlays = {}      # draped on the previous terrain, so not reusable
+        self.patch = None
+        self._box_first = None
         self.plotter.clear()
         self.plotter.add_axes(interactive=False)
         self.targets = TargetLayer(self.plotter)
@@ -192,6 +204,8 @@ class TerrainView(QtWidgets.QWidget):
         self.targets.set_ve(self.ve)
         for layer in self.overlays.values():
             self._draw_overlay(layer)
+        if self.patch is not None:
+            self._draw_patch()
         self._redraw_measure()
         self.update_clipping()
         self.plotter.render()
@@ -570,7 +584,8 @@ class TerrainView(QtWidgets.QWidget):
         self._drag_mode = None
         self._drag_z = None
         self._drag_rot = None
-        if not self.measuring or self._press_pos is None or self.line is None:
+        if not (self.measuring or self.box_mode) or self._press_pos is None \
+                or self.line is None:
             self._press_pos = None
             return
         try:
@@ -584,6 +599,9 @@ class TerrainView(QtWidgets.QWidget):
             return
         pos = self._pick_crs()
         if not pos:
+            return
+        if self.box_mode:
+            self._box_click(pos)
             return
         p = self.surface.probe(*pos)
         if p is None:
@@ -711,6 +729,123 @@ class TerrainView(QtWidgets.QWidget):
                 lp, [t for *_, t in layer.labels], name=f"ovl:{layer.name}",
                 font_size=9, text_color=layer.color, shape=None,
                 show_points=False, always_visible=True, render=False)
+
+    # ------------------------------------------------------------- slope box
+
+    def set_box_mode(self, on: bool) -> None:
+        self.box_mode = bool(on)
+        if not on:
+            self._box_first = None
+            self.plotter.remove_actor("boxcorner", render=False)
+            self.plotter.render()
+
+    def _box_click(self, pos) -> None:
+        """One click centres a fixed box; two clicks define a free rectangle."""
+        x, y = pos
+        if self.box_size and self.box_size > 0:
+            half = self.box_size / 2.0
+            self.make_patch(x - half, y - half, x + half, y + half)
+            return
+        if self._box_first is None:
+            self._box_first = (x, y)
+            self._mark_corner(x, y)
+            self.boxProgress.emit("First corner set - click the opposite one")
+            return
+        (x0, y0), self._box_first = self._box_first, None
+        self.plotter.remove_actor("boxcorner", render=False)
+        self.make_patch(x0, y0, x, y)
+
+    def _mark_corner(self, x, y) -> None:
+        p = self.surface.probe(x, y)
+        if p is None:
+            return
+        pt = np.array([[*self.surface.local_from_crs(x, y), p.z * self.ve]])
+        actor = self.plotter.add_points(
+            pt, color=BOX_COLOR, point_size=9, render_points_as_spheres=True,
+            name="boxcorner", render=False, pickable=False)
+        draw_on_top(actor)
+        self.plotter.render()
+
+    def make_patch(self, x0, y0, x1, y1) -> None:
+        """Recompute slope at native resolution for this rectangle and draw it."""
+        if self.surface is None:
+            return
+        try:
+            patch = self.surface.slope_patch(x0, y0, x1, y1)
+        except Exception as exc:
+            self.boxProgress.emit(str(exc))
+            return
+        self.patch = patch
+        self._draw_patch()
+        self.patchChanged.emit(patch)
+
+    def clear_patch(self) -> None:
+        self.patch = None
+        self._box_first = None
+        for nm in ("patch", "patchedge", "boxcorner"):
+            self.plotter.remove_actor(nm, render=False)
+        self.plotter.render()
+        self.patchChanged.emit(None)
+
+    def _draw_patch(self) -> None:
+        """The window drawn at its own resolution, on its own colour scale."""
+        for nm in ("patch", "patchedge"):
+            self.plotter.remove_actor(nm, render=False)
+        p = self.patch
+        if p is None or self.surface is None:
+            return
+        s = self.surface
+        z = p.z[::-1, :]
+        sl = p.slope[::-1, :]
+        ny, nx = z.shape
+        # cell centres, in the same local metres the terrain uses
+        x_first, y_first = s.local_from_crs(
+            *s.crs_from_rowcol(p.row0 + ny - 1, p.col0))
+        dx = s.px * s.mx * s.probe_step
+        dy = s.py * s.my * s.probe_step
+        valid = np.isfinite(z)
+        fill = float(np.nanmedian(z)) if valid.any() else 0.0
+        grid = pv.ImageData(dimensions=(nx, ny, 1), spacing=(dx, dy, 1.0),
+                            origin=(x_first, y_first, 0.0))
+        grid.point_data["elev"] = np.where(valid, z, fill).ravel(order="C").astype(np.float32)
+        grid.point_data["slope"] = np.where(np.isfinite(sl), sl, 0.0
+                                            ).ravel(order="C").astype(np.float32)
+        grid.set_active_scalars("elev")
+        mesh = grid.warp_by_scalar("elev", factor=1.0)
+        bad = ~valid
+        cb = bad[:-1, :-1] | bad[:-1, 1:] | bad[1:, :-1] | bad[1:, 1:]
+        if cb.any() and hasattr(mesh, "hide_cells"):
+            mesh.hide_cells(np.flatnonzero(cb.ravel(order="C")), inplace=True)
+
+        # Its own colour range: a box on a flat basin and one on a salt flank
+        # need different scales, and sharing the main map's would waste it.
+        good = p.slope[np.isfinite(p.slope)]
+        hi = float(np.percentile(good, 99)) if good.size else 1.0
+        actor = self.plotter.add_mesh(
+            mesh, scalars="slope", clim=(0.0, max(hi, 0.5)),
+            cmap=_ramps.SLOPE_RAMPS["Green to red"], name="patch",
+            smooth_shading=True, ambient=0.30, diffuse=0.85,
+            show_scalar_bar=False, render=False, pickable=False)
+        actor.SetScale(1.0, 1.0, self.ve)
+        draw_on_top(actor)
+        self._draw_patch_edge()
+
+    def _draw_patch_edge(self) -> None:
+        p = self.patch
+        s = self.surface
+        if p is None or s is None:
+            return
+        corners = [(p.x0, p.y0), (p.x1, p.y0), (p.x1, p.y1), (p.x0, p.y1)]
+        pts = []
+        for x, y in corners + [corners[0]]:
+            pr = s.probe(x, y)
+            zz = pr.z if pr else float(np.nanmedian(p.z))
+            pts.append((*s.local_from_crs(x, y), zz * self.ve))
+        actor = self.plotter.add_mesh(
+            pv.lines_from_points(np.asarray(pts, float)), color=BOX_COLOR,
+            line_width=2, name="patchedge", render=False, pickable=False)
+        draw_on_top(actor)
+        self.plotter.render()
 
     # ------------------------------------------------------------------ misc
 

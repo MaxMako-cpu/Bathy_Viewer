@@ -123,6 +123,7 @@ drag_test.py      camera checks: level rotation, Z lock, zoom depth, click
 prefs_test.py     restart checks: files, folders and settings remembered
 colour_test.py    colour checks: per-mode ramps, overlay colours, restart
 depth_test.py     five-body checks: both feeds, depths, TMS, tethers
+slopebox_test.py  slope box: native resolution, halo, picking, limits
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
   viewer.py       PyVista/VTK scene: mesh, hillshade, picking, measuring
@@ -151,6 +152,37 @@ Settings live in QSettings — the registry on Windows — so there is no file t
 mislay. Setting `BATHY3D_PROFILE` puts a run in its own settings profile; every
 test suite does that and wipes it on entry, so tests neither read nor overwrite
 real preferences and cannot leave state behind for one another.
+
+## Slope box
+
+Turn on **Slope box** in the Pointer panel and click the seabed. Slope inside
+that rectangle is recomputed from the **probe grid at its native resolution**
+and drawn over the terrain on its own colour scale, with the statistics beside
+it: mean, p95 and maximum slope, relief, depth range, and the fraction steeper
+than a threshold you set.
+
+This exists because the display mesh cannot hold the answer. At the Medium
+setting a 200 m box is about **4 cells**; at native resolution it is **272**.
+Everything between those is currently averaged into one number.
+
+*Box size* takes 200 m, 500 m, 1 km, 2 km, 5 km, or *Two corners* for a free
+rectangle — the first click sets one corner, the second the opposite one.
+Only one box at a time.
+
+It is cheap enough to feel instant: a 200 m box is 16 x 16 cells, a 10 km box
+0.67 M cells and 29 ms. Boxes over 6 M cells are refused rather than attempted.
+
+Two details worth knowing. The window is read with a **one-cell halo**, so slope
+at the very edge of the box comes from real neighbours rather than a clamped
+short baseline. And the patch sits at **true elevations while the terrain around
+it is block-averaged**, so expect a small step at the boundary — typically a
+metre or two, more on steep ground. That step is the decimation error made
+visible, not a drawing fault.
+
+The box uses **Horn's 8-neighbour method**, the one ArcGIS and GDAL use, rather
+than the two-point central difference the cursor readout still uses. On this
+grid the two agree to 0.014 degrees on average but differ by up to 9.6 degrees
+on the steep, noisy cells.
 
 ## Shapefile overlays
 

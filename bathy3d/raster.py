@@ -199,6 +199,49 @@ class Surface:
         aspect = (math.degrees(math.atan2(-ge, -gn)) + 360.0) % 360.0
         return slope, aspect
 
+    def slope_patch(self, x0: float, y0: float, x1: float, y1: float):
+        """Recompute slope at native resolution for one rectangle.
+
+        The box is snapped to whole probe cells and read with a one-cell halo,
+        so the slope at the very edge is computed from real neighbours rather
+        than a clamped short baseline.
+        """
+        from_ = self.rowcol_from_crs
+        r_a, c_a = from_(min(x0, x1), max(y0, y1))     # top-left
+        r_b, c_b = from_(max(x0, x1), min(y0, y1))     # bottom-right
+        h, w = self.z_probe.shape
+        # ceil() already gives the exclusive end past the last wanted cell;
+        # adding one more grew a 200 m box to 232 m and let a 1 m box through.
+        r0 = max(0, int(math.floor(min(r_a, r_b))))
+        r1 = min(h, int(math.ceil(max(r_a, r_b))))
+        c0 = max(0, int(math.floor(min(c_a, c_b))))
+        c1 = min(w, int(math.ceil(max(c_a, c_b))))
+        if r1 - r0 < 2 or c1 - c0 < 2:
+            raise RasterError("that box is smaller than one grid cell")
+        if (r1 - r0) * (c1 - c0) > MAX_PATCH_CELLS:
+            raise RasterError(
+                f"{(r1 - r0) * (c1 - c0):,} cells is too large a box - "
+                f"keep it under {MAX_PATCH_CELLS:,}")
+
+        hr0, hr1 = max(0, r0 - 1), min(h, r1 + 1)
+        hc0, hc1 = max(0, c0 - 1), min(w, c1 + 1)
+        halo = self.z_probe[hr0:hr1, hc0:hc1]
+        cell = self.native_cell_m * self.probe_step
+        slope, aspect = horn_slope(halo, cell)
+        sr, sc = r0 - hr0, c0 - hc0
+        z = halo[sr:sr + (r1 - r0), sc:sc + (c1 - c0)]
+        slope = slope[sr:sr + (r1 - r0), sc:sc + (c1 - c0)]
+        aspect = aspect[sr:sr + (r1 - r0), sc:sc + (c1 - c0)]
+        # NaN depths cannot produce a slope; pad-edge would invent one.
+        bad = ~np.isfinite(z)
+        if bad.any():
+            slope = np.where(bad, np.nan, slope)
+            aspect = np.where(bad, np.nan, aspect)
+
+        wx0, wy0 = self.crs_from_rowcol(r0 - 0.5, c0 - 0.5)
+        wx1, wy1 = self.crs_from_rowcol(r1 - 0.5, c1 - 0.5)
+        return SlopePatch(wx0, wy0, wx1, wy1, z, slope, aspect, cell, r0, c0)
+
     def horizontal_distance(self, x1, y1, x2, y2) -> float:
         """Metres between two CRS positions - grid distance, or geodesic if degrees."""
         if self.geographic:
@@ -354,3 +397,78 @@ def load(
     )
     say(100, "ready")
     return surf
+
+
+# ---------------------------------------------------------------- slope patch
+
+#: Refuse a window bigger than this many native cells. A 10 km box is 0.67 M
+#: cells and takes 29 ms; this leaves plenty of headroom while stopping someone
+#: dragging a box across the whole grid.
+MAX_PATCH_CELLS = 6_000_000
+
+
+@dataclass
+class SlopePatch:
+    """A window of the grid at its own native resolution.
+
+    The display mesh is decimated; this is not. Everything here is computed
+    from the probe grid, so a 200 m box carries its real 16 x 16 cells rather
+    than the 4 the display mesh would give it.
+    """
+
+    x0: float           # CRS bounds, snapped to whole cells
+    y0: float
+    x1: float
+    y1: float
+    z: np.ndarray       # elevations, metres, positive up
+    slope: np.ndarray   # degrees
+    aspect: np.ndarray  # degrees from grid north, downslope
+    cell: float         # metres
+    row0: int
+    col0: int
+
+    @property
+    def shape(self):
+        return self.z.shape
+
+    def stats(self) -> dict:
+        s = self.slope[np.isfinite(self.slope)]
+        z = self.z[np.isfinite(self.z)]
+        if s.size == 0 or z.size == 0:
+            return {}
+        return {
+            "cells": int(self.z.size),
+            "valid": int(z.size),
+            "mean": float(s.mean()),
+            "p95": float(np.percentile(s, 95)),
+            "max": float(s.max()),
+            "depth_min": float(-z.max()),
+            "depth_max": float(-z.min()),
+            "relief": float(z.max() - z.min()),
+            "side_x": abs(self.x1 - self.x0),
+            "side_y": abs(self.y1 - self.y0),
+        }
+
+    def fraction_over(self, degrees: float) -> float:
+        s = self.slope[np.isfinite(self.slope)]
+        return float((s > degrees).mean()) if s.size else float("nan")
+
+
+def horn_slope(z: np.ndarray, cell: float):
+    """Slope and aspect by Horn's 8-neighbour method, in degrees.
+
+    The weighted 3x3 that ArcGIS and GDAL use. A plain two-point central
+    difference agrees with it on average but disagrees by up to ~10 degrees on
+    the steep, noisy cells - which are the ones slope work is about.
+    """
+    a = z.astype(np.float32, copy=False)
+    p = np.pad(a, 1, mode="edge")
+    dzdx = ((p[:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:]) -
+            (p[:-2, :-2] + 2 * p[1:-1, :-2] + p[2:, :-2])) / (8.0 * cell)
+    dzdy = ((p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) -
+            (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])) / (8.0 * cell)
+    slope = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+    # dzdy is built north-positive, so downslope bearing falls straight out.
+    aspect = (np.degrees(np.arctan2(-dzdx, -dzdy)) + 360.0) % 360.0
+    aspect[(dzdx == 0) & (dzdy == 0)] = np.nan
+    return slope, aspect
