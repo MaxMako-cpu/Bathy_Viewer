@@ -46,6 +46,18 @@ from dataclasses import asdict, dataclass, field, fields
 #: deliberately reported as a guess wherever it is shown.
 DEFAULT_ARREST_DEG = 15.0
 
+#: A node stops on gentler ground than it needs to start on. Dynamic
+#: resistance is lower than static, and clay that has been sheared once is
+#: weaker than clay that has not - so the angle it arrests at is below the
+#: angle it set off from. With no recoveries to say how much below, the arrest
+#: angle is taken as this fraction of the slope it slid from.
+#:
+#: It is a stand-in, and the first thing the recoveries replace. Too high and
+#: the corridor stops short of the node; too low and it runs down the whole
+#: hillside. On the BOEM grid 0.6 gives 60-100 m from typical working ground,
+#: which is a corridor an ROV can actually fly.
+ARREST_FRACTION = 0.6
+
 #: Corridor half-angle before anything is known about how well the grid's
 #: aspect predicts the real track. Wide, because a 12.22 m grid smooths exactly
 #: the metre-scale relief that steers a sliding box.
@@ -186,15 +198,16 @@ class Model:
 
     def describe(self) -> str:
         if self.n == 0:
-            return (f"No recovered cases yet - using the default "
-                    f"{self.arrest_deg:.0f} deg arrest angle and a "
-                    f"{self.spread_deg:.0f} deg corridor. Treat the corridor "
-                    f"as a direction to start looking, not a prediction.")
+            return (f"No recovered cases yet - a node is assumed to arrest at "
+                    f"{ARREST_FRACTION:.0%} of the slope it slid from, with a "
+                    f"+/-{self.spread_deg:.0f} deg corridor. Treat it as a "
+                    f"direction to start looking, not a prediction.")
         head = (f"Arrest angle {self.arrest_deg:.1f} deg, corridor "
                 f"+/-{self.spread_deg:.0f} deg, from {self.n} "
                 f"recovered case{'s' if self.n != 1 else ''}")
         if math.isfinite(self.lo) and math.isfinite(self.hi):
-            head += f" (bracketed {self.lo:.1f}-{self.hi:.1f} deg)"
+            head += (f" (seen to stop on {self.lo:.1f} deg, "
+                     f"to start by {self.hi:.1f} deg)")
         if math.isfinite(self.runout_mean):
             head += (f". Runout so far {self.runout_mean:.0f} m mean, "
                      f"{self.runout_max:.0f} m worst")
@@ -218,25 +231,26 @@ def fit(cases) -> Model:
     lo = max(stopped) if stopped else float("nan")
     hi = min(started) if started else float("nan")
 
+    # These are two different angles, not one with error bars. A node starts
+    # moving on steeper ground than it comes to rest on, so `hi` (something was
+    # seen to start here) and `lo` (something was seen to stop here) bracket
+    # different physical thresholds. Tracing uses the arrest angle, because
+    # what the corridor needs to know is where it stopped.
     note = ""
     consistent = True
-    if math.isfinite(lo) and math.isfinite(hi):
-        if lo <= hi:
-            arrest = (lo + hi) / 2.0
-        else:
-            # A node stopped on ground steeper than another one started on.
-            # No single threshold explains both, and averaging the two ends
-            # would hide that rather than report it.
-            consistent = False
-            arrest = (lo + hi) / 2.0
-            note = (f"Cases disagree: something stopped on {lo:.1f} deg while "
-                    f"something else started sliding on {hi:.1f} deg. The "
-                    "seabed is not the same everywhere, so expect a wide "
-                    "corridor until there are more cases.")
-    elif math.isfinite(lo):
-        arrest = lo
+    if math.isfinite(lo) and math.isfinite(hi) and lo > hi:
+        # Something stopped on ground steeper than something else started on.
+        # That cannot be one seabed with one pair of thresholds, and averaging
+        # the two would hide it rather than report it.
+        consistent = False
+        note = (f"Cases disagree: something stopped on {lo:.1f} deg while "
+                f"something else started sliding on {hi:.1f} deg. The seabed "
+                "is not the same everywhere, so expect a wide corridor until "
+                "there are more cases.")
+    if math.isfinite(lo):
+        arrest = lo                     # measured, directly: it stopped there
     elif math.isfinite(hi):
-        arrest = hi
+        arrest = hi * ARREST_FRACTION
     else:
         arrest = DEFAULT_ARREST_DEG
 
@@ -261,6 +275,28 @@ def fit(cases) -> Model:
         runout_max=float(max(runs)) if runs else float("nan"),
         note=note,
     )
+
+
+def effective_arrest(model: "Model", placed_slope: float) -> float:
+    """The angle to trace with, for a node known to have slid from here.
+
+    Pressing *node slid* is itself a measurement. Whatever the threshold is, it
+    is **at most** the slope the node was standing on - it demonstrably left
+    that ground. A model saying the node could not have moved is contradicted
+    by the very event that prompted it, and must give way.
+
+    That is not a detail. On the BOEM grid three quarters of the seabed is
+    under 5 degrees, so a fixed 15 degree default refuses to predict anything
+    at all across most of where the work happens.
+    """
+    if not math.isfinite(placed_slope) or placed_slope <= 0.0:
+        return model.arrest_deg
+    if model.n and math.isfinite(model.lo):
+        est = model.lo          # measured: a node has been found resting on this
+    else:
+        est = placed_slope * ARREST_FRACTION
+    # It left this ground, so it cannot come to rest on ground this steep.
+    return max(0.0, min(est, placed_slope * 0.95))
 
 
 def trace(surface, x: float, y: float, arrest_deg: float,

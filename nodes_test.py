@@ -58,17 +58,19 @@ check("no cases means the stated default",
       m.n == 0 and m.arrest_deg == nodes.DEFAULT_ARREST_DEG
       and m.spread_deg == nodes.DEFAULT_SPREAD_DEG)
 check("and it says so rather than pretending",
-      "default" in m.describe().lower(), m.describe()[:70])
+      "no recovered cases" in m.describe().lower(), m.describe()[:70])
 check("no cases is provisional", m.provisional)
 
-# One case brackets from both ends at once: it started on 20 and stopped on 10,
-# so the threshold is somewhere between.
+# One case measures both thresholds at once: it started on 20 and stopped on
+# 10. These are two different angles, not one with error bars - a node sets
+# off on steeper ground than it comes to rest on - so the arrest angle is the
+# one it was seen to stop at, not the middle of the pair.
 m = nodes.fit([case(20.0, 10.0)])
-check("one case brackets the threshold",
+check("one case brackets both thresholds",
       abs(m.lo - 10.0) < 1e-9 and abs(m.hi - 20.0) < 1e-9,
-      f"{m.lo:.1f}-{m.hi:.1f}")
-check("and takes the middle of the bracket", abs(m.arrest_deg - 15.0) < 1e-9,
-      f"{m.arrest_deg:.2f}")
+      f"stopped on {m.lo:.1f}, started by {m.hi:.1f}")
+check("and the arrest angle is the one it stopped at",
+      abs(m.arrest_deg - 10.0) < 1e-9, f"{m.arrest_deg:.2f}")
 check("it is consistent", m.consistent)
 
 # More cases close the bracket from both sides.
@@ -169,6 +171,32 @@ check("an observed direction steers the first step then terrain takes over",
       f"first step {path[1][0]:+.1f}E, ended {path[-1][0]:+.1f}E")
 
 check("no grid means no trace", nodes.trace(None, 0, 0, 15.0)[0] == [])
+
+# Pressing "node slid" says the threshold is at most the ground it left. A
+# model that refuses to predict on the very ground a node just slid off is
+# contradicted by the event that prompted it - and three quarters of this grid
+# is under 5 degrees, so a fixed 15 degree default predicted nothing at all
+# across most of where the work happens. That was the bug.
+empty = nodes.fit([])
+eff = nodes.effective_arrest(empty, 6.36)
+check("a gentle placement still gets a usable arrest angle",
+      0.0 < eff < 6.36, f"{eff:.2f} deg from 6.36 deg ground")
+check("and it is the stated fraction of it",
+      abs(eff - 6.36 * nodes.ARREST_FRACTION) < 1e-9, f"{eff:.3f}")
+check("a node never arrests on the ground it just left",
+      nodes.effective_arrest(nodes.fit([case(3.0, 2.0)]), 2.5) < 2.5,
+      f"{nodes.effective_arrest(nodes.fit([case(3.0, 2.0)]), 2.5):.2f}")
+check("with cases, the measured stopping angle is used",
+      abs(nodes.effective_arrest(nodes.fit([case(30.0, 11.0)]), 25.0)
+          - 11.0) < 1e-9)
+check("flat ground has no arrest angle to find",
+      nodes.effective_arrest(empty, float("nan")) == empty.arrest_deg)
+
+gentle = Plane(6.0, 90.0, flat_after=200.0)
+path, why = nodes.trace(gentle, 0.0, 0.0,
+                        nodes.effective_arrest(empty, 6.0))
+check("so a node does slide on gentle ground once it is known to have slid",
+      len(path) > 2, f"{len(path)} points, {why}")
 
 left, right = nodes.corridor([(0, 0, 0), (50, 0, -1), (100, 0, -2)], 20.0)
 check("the corridor opens with distance",
@@ -330,6 +358,43 @@ path, left, right, why = win._predict(opened)
 check("the prediction runs downhill from the placement", len(path) >= 2, why)
 check("and starts exactly where the node was put",
       abs(path[0][0] - STEEP[0]) < 1e-6 and abs(path[0][1] - STEEP[1]) < 1e-6)
+
+# The real complaint: on ordinary working ground nothing was drawn at all, and
+# nothing was said either. Both halves of that are checked here.
+GENTLE = None
+for fr in [i / 24.0 for i in range(1, 24)]:
+    for fc in [i / 24.0 for i in range(1, 24)]:
+        gx, gy = surf.crs_from_rowcol(surf.height * fr, surf.width * fc)
+        gp = surf.probe(gx, gy)
+        if gp and math.isfinite(gp.slope) and 3.0 < gp.slope < 8.0:
+            GENTLE = (gx, gy, gp.slope)
+            break
+    if GENTLE:
+        break
+assert GENTLE, "no gentle ground found on this grid"
+print(f"    and a gentle case on {GENTLE[2]:.1f} deg ground")
+win.slide_open.pop("ROV1", None)
+gp = surf.probe(GENTLE[0], GENTLE[1])
+soft = nodes.SlideCase(
+    rov="ROV1", placed_x=GENTLE[0], placed_y=GENTLE[1], placed_z=gp.z,
+    placed_slope=gp.slope, placed_aspect=gp.aspect, grid=win._path or "")
+win.slide_open["ROV1"] = soft
+win.statusBar().clearMessage()
+win._draw_case("ROV1")
+pump(300)
+gpath, _gl, _gr, gwhy = win._predict(soft)
+check("gentle working ground still gets a corridor",
+      len(gpath) >= 2, f"{len(gpath)} points on {GENTLE[2]:.1f} deg, {gwhy}")
+check("and it is drawn",
+      "slide:ROV1" in set(win.view.plotter.renderer.actors))
+check("and the operator is told what happened",
+      "corridor" in win.statusBar().currentMessage().lower(),
+      win.statusBar().currentMessage()[:90])
+win.node_cancel("ROV1")
+pump(150)
+win.slide_open["ROV1"] = opened
+win._draw_case("ROV1")
+pump(200)
 
 # Recover it somewhere along the predicted path, as a pilot would.
 mid = path[min(len(path) - 1, max(1, len(path) // 2))]

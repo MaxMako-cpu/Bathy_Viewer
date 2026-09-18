@@ -516,8 +516,30 @@ It is never drawn narrower than ±8°, because a handful of cases cannot justify
 a tight corridor, and it opens with distance since an error in the initial
 direction costs more the further the node went.
 
-Until there are cases it uses a stated default of 15° and ±25°, and says so
-wherever it is shown. It never draws a confident corridor on no data.
+### Pressing the button is itself a measurement
+
+Whatever the threshold is, it is **at most** the slope the node was standing
+on — it demonstrably left that ground. So the placement slope caps the arrest
+angle for that case, and a model claiming the node could not have moved gives
+way to the event that prompted it.
+
+That is not a detail. Three quarters of this grid is under 5°, so a fixed
+default refused to predict anything at all across most of where the work
+happens: the trace returned a single point, the corridor was declined for being
+too short, and nothing was drawn and nothing was said.
+
+A node also stops on gentler ground than it needs to start on — dynamic
+resistance is lower than static, and clay sheared once is weaker than clay that
+has not been. With no recoveries to say how much gentler, the arrest angle is
+taken as **60%** of the slope it slid from (`ARREST_FRACTION`). That is a
+stand-in and the first thing the recoveries replace.
+
+Expect long corridors on gentle ground until then — a shallow slope eases
+slowly, so the trace runs a long way before it arrests. The first few
+recoveries pull that in sharply.
+
+There is now always an outcome in the status bar, including when there is no
+corridor to draw.
 
 ### The database
 

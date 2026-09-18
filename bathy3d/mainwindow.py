@@ -266,14 +266,12 @@ class NodesDialog(QtWidgets.QDialog):
             name.setStyleSheet(f"color: {win.fleet.colour(slot)};")
             h.addWidget(name)
             path, _l, _r, why = win._predict(case)
-            run = 0.0
-            for i in range(1, len(path)):
-                run += math.hypot(path[i][0] - path[i - 1][0],
-                                  path[i][1] - path[i - 1][1])
+            run = win._case_runout(path)
+            told = (f"corridor runs {run:,.0f} m towards "
+                    f"{bearing_text(case.placed_aspect)}°"
+                    if len(path) >= 2 else "no corridor")
             h.addWidget(QtWidgets.QLabel(
-                f"placed on {case.placed_slope:.1f}°, "
-                f"corridor runs {run:,.0f} m towards "
-                f"{bearing_text(case.placed_aspect)}° - {why}"))
+                f"placed on {case.placed_slope:.1f}°, {told} - {why}"))
             h.addStretch(1)
             found = QtWidgets.QPushButton("Node found here")
             found.setToolTip("Record this ROV's position as where the node "
@@ -1335,32 +1333,54 @@ class MainWindow(QtWidgets.QMainWindow):
             placed_aspect=float(p.aspect), observed_dir=seen,
             grid=self._path or "")
         self.slide_open[slot] = case
-        self._draw_case(slot)
         self._sync_nodes_menu()
         self.show_nodes()
-
-        heading = seen if math.isfinite(seen) else p.slope and p.aspect
-        self.statusBar().showMessage(
-            f"{self.fleet.label(slot)}: node slid on {p.slope:.1f} deg ground, "
-            f"downslope bearing {compass(p.aspect)} {bearing_text(p.aspect)}. "
-            + self.slide_model.describe(), 20000)
+        # _draw_case puts the outcome in the status bar, including the case
+        # where there is no corridor to draw, so it goes last and has the
+        # final word.
+        self._draw_case(slot)
 
     def _predict(self, case):
         """The traced fall line and corridor for one open case."""
         s = self.view.surface
-        path, why = nodes.trace(s, case.placed_x, case.placed_y,
-                                self.slide_model.arrest_deg,
+        arrest = nodes.effective_arrest(self.slide_model, case.placed_slope)
+        path, why = nodes.trace(s, case.placed_x, case.placed_y, arrest,
                                 start_dir=case.observed_dir)
         left, right = nodes.corridor(path, self.slide_model.spread_deg)
         return path, left, right, why
 
+    def _case_runout(self, path) -> float:
+        return sum(math.hypot(path[i][0] - path[i - 1][0],
+                              path[i][1] - path[i - 1][1])
+                   for i in range(1, len(path)))
+
     def _draw_case(self, slot):
+        """Draw the corridor, or say plainly why there is none to draw.
+
+        Drawing nothing and saying nothing was the original fault here: on
+        ground below the threshold the trace returned a single point, the draw
+        call declined it for being too short, and the operator was left looking
+        at an unchanged screen with no idea whether anything had happened.
+        """
         case = self.slide_open.get(slot)
         if case is None or not self.act_nodes.isChecked():
             return
-        path, left, right, _why = self._predict(case)
+        path, left, right, why = self._predict(case)
+        if len(path) < 2:
+            self.view.clear_slide(slot)
+            self.statusBar().showMessage(
+                f"{self.fleet.label(slot)}: no corridor drawn - {why}. The "
+                "node cannot have gone far from where it was placed; search "
+                "close in.", 25000)
+            return
         self.view.draw_slide(slot, path, left, right,
                              self.fleet.colour(slot))
+        arrest = nodes.effective_arrest(self.slide_model, case.placed_slope)
+        self.statusBar().showMessage(
+            f"{self.fleet.label(slot)}: corridor runs "
+            f"{self._case_runout(path):,.0f} m towards "
+            f"{bearing_text(case.placed_aspect)} {compass(case.placed_aspect)}"
+            f", arresting below {arrest:.1f} deg - {why}.", 25000)
 
     def node_found(self, slot):
         """Close a case with the recovery position - this is what teaches it."""
