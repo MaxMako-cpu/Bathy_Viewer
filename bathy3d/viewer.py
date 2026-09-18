@@ -731,6 +731,68 @@ class TerrainView(QtWidgets.QWidget):
                 font_size=9, text_color=layer.color, shape=None,
                 show_points=False, always_visible=True, render=False)
 
+    # ----------------------------------------------------------- node slides
+
+    def draw_slide(self, name: str, path, left, right, colour="#f0a93c"):
+        """A predicted slide path and its search corridor, draped on the seabed.
+
+        Drawn like a shapefile overlay and for the same reason: it is a line on
+        the bottom, and a line on the bottom has to follow the relief or it
+        means nothing. The corridor edges are dashed so they never read as the
+        prediction itself - the corridor is where to look, the centre line is
+        only the most likely track within it.
+        """
+        self.clear_slide(name)
+        if self.surface is None or len(path) < 2:
+            return
+        lift = max(self.surface.native_cell_m * 0.2, 1.0)
+
+        def drape(pairs):
+            out = []
+            for item in pairs:
+                x, y = item[0], item[1]
+                p = self.surface.probe(x, y)
+                if p is None or not np.isfinite(p.z):
+                    continue
+                lx, ly = self.surface.local_from_crs(x, y)
+                out.append((lx, ly, (p.z + lift) * self.ve))
+            return np.asarray(out, dtype=float)
+
+        centre = drape(path)
+        if len(centre) >= 2:
+            actor = self.plotter.add_mesh(
+                pv.lines_from_points(centre), color=colour, line_width=3,
+                name=f"slide:{name}", render=False, pickable=False)
+            draw_on_top(actor)
+        for side, pts in (("l", left), ("r", right)):
+            edge = drape(pts)
+            if len(edge) < 2:
+                continue
+            actor = self.plotter.add_mesh(
+                pv.lines_from_points(edge), color=colour, line_width=2,
+                opacity=0.55, name=f"slide{side}:{name}",
+                render=False, pickable=False)
+            draw_on_top(actor)
+        # The placement point, so the start of the search is unmistakable.
+        if len(centre):
+            actor = self.plotter.add_points(
+                centre[:1], color=colour, point_size=14,
+                render_points_as_spheres=True, name=f"slidep:{name}",
+                render=False, pickable=False)
+            draw_on_top(actor)
+        self.plotter.render()
+
+    def clear_slide(self, name: str) -> None:
+        for prefix in ("slide", "slidel", "slider", "slidep"):
+            self.plotter.remove_actor(f"{prefix}:{name}", render=False)
+
+    def clear_slides(self) -> None:
+        for actor in list(getattr(self.plotter, "actors", {}) or {}):
+            if str(actor).startswith(("slide:", "slidel:", "slider:",
+                                      "slidep:")):
+                self.plotter.remove_actor(actor, render=False)
+        self.plotter.render()
+
     # ------------------------------------------------------------- slope box
 
     def set_box_mode(self, on: bool) -> None:

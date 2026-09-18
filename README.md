@@ -86,7 +86,9 @@ which is exactly what makes small depth changes jump out and equally what makes
 it poor for judging magnitude at a glance. Bathy and Viridis are there for
 that.
 
-The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing,
+The **Readout** panel tracks the cursor: depth, slope angle, downslope bearing
+(which was mirrored north-south until a node slide traced uphill and exposed
+it — see *Node slides*),
 CRS easting/northing, latitude/longitude, and the source pixel. The **Measured
 line** table lists each leg's horizontal distance, depth change, gradient and
 bearing, with totals for horizontal, along-seabed and straight-chord distance.
@@ -168,6 +170,7 @@ depth_test.py     five-body checks: both feeds, depths, TMS, tethers
 slopebox_test.py  slope box: native resolution, halo, picking, limits
 crs_test.py       other projections: UTM 16N/31N/15S/56S and geographic
 calib_test.py     depth calibration: the fit, then tie-ins through the window
+nodes_test.py     node slides: the fit, a known hillside, cases through the window
 vehicles_test.py  renaming: labels, colours, and that no slot moved
 bathy3d/
   raster.py       GeoTIFF -> Surface; probe grid, display grid, CRS maths
@@ -177,6 +180,7 @@ bathy3d/
   feed.py         UDP listener + record parser
   vectors.py      shapefile reader; reproject, densify, drape
   calib.py        depth tie-in points and the correction fitted to them
+  nodes.py        node slide cases, the fall-line trace and the case database
   vehicles.py     per-vessel names and colours, keyed on the feed slots
   prefs.py        what is remembered between runs
   ramps.py        colour ramps
@@ -464,6 +468,78 @@ Settings written then — calibration tie-ins especially, which outlive a
 session — still carry them, so `feed.LEGACY_SLOTS` maps them forward on the
 way in rather than letting them orphan.
 
+## Node slides
+
+A node is placed by manipulator, so where it started is known to a couple of
+metres. Sometimes it does not stay: on a slope it slides, and the job becomes
+finding a 220 x 275 mm box somewhere downhill of a known point.
+
+**Nodes › Enable node slide tracking**, then **Node slid at \<ROV\>…** when one
+goes. It asks whether anyone saw which way — a bearing, or *nobody saw* — then
+traces the fall line from that ROV's current position and drapes a search
+corridor on the seabed. When it turns up, **Node found here** takes the ROV's
+position as the resting place and files the case. **Cancel** closes it and
+records nothing.
+
+Two cases can be open at once, one per ROV.
+
+### It slides; it never rolls
+
+The MNode Node-X is a 114 mm slab on a 220 x 275 mm base weighing 7.1 kg in
+water. Tipping one over needs ground steeper than 63°; the steepest cell in the
+BOEM grid is 49°. So there is one mechanism, and it is the well-behaved one —
+the node tracks the fall line until the slope stops driving it.
+
+At 1.15 kPa it barely penetrates, which is why it slides at all.
+
+### The threshold is measured, not calculated
+
+Sliding begins when the downslope pull beats the adhesion between the base and
+the clay. Across the shear strengths a Gulf slope plausibly has, that puts the
+threshold anywhere from about 7° to 60° — and the strength of the top few
+centimetres of clay is not something an ROV can measure.
+
+So it is not calculated. Each recovered case measures it from both sides at
+once:
+
+* it **started** on the placement slope, so the threshold is *at most* that;
+* it **stopped** on the recovery slope, so the threshold is *at least* that.
+
+Cases bracket the answer rather than estimating it, and close on it from both
+ends as they accumulate. When the bracket crosses over — something stopped on
+ground steeper than something else started on — no single threshold explains
+both, and the fit says so rather than averaging the contradiction away.
+
+Corridor width is measured too, from how far real tracks missed the grid's own
+downslope bearing. That is a measurement of the terrain model, not of the node.
+It is never drawn narrower than ±8°, because a handful of cases cannot justify
+a tight corridor, and it opens with distance since an error in the initial
+direction costs more the further the node went.
+
+Until there are cases it uses a stated default of 15° and ±25°, and says so
+wherever it is shown. It never draws a confident corridor on no data.
+
+### The database
+
+Every confirmed case is kept in a JSON file under `%APPDATA%\Bathy3D`, written
+through a temporary file so a crash cannot truncate it. A file rather than
+QSettings because this is a log that grows over years and is worth carrying
+between machines and vessels. **Nodes › Export case database** writes it as CSV
+with runout, track, and how far the track missed the prediction.
+
+Cases hold the feed slot, not the display name, so renaming a vehicle does not
+orphan its history.
+
+### What it cannot do
+
+The grid is 12.22 m posting and disagrees with the ROV's own depth by tens of
+metres. A sliding node is arrested by metre-scale relief — a small bench, a
+scarp toe — which a grid that coarse averages away. So expect the runout to be
+over-predicted, which is the right direction to be wrong in for a search: the
+corridor is longer than reality and you sweep a little more ground.
+
+Treat it as prioritisation — search this corridor first — never as a position.
+
 ## Depth calibration
 
 A vehicle sitting on the bottom draws well clear of a preplot draped on the
@@ -583,5 +659,7 @@ the grid's seabed with the altitude at zero.
 - Shapefile polygons are drawn as outlines, not filled.
 - Neither feed carries heading, so no marker has an orientation.
 - The vessel has no depth of its own; it is always drawn at the surface.
+- Node slide corridors are prioritisation, not a position: the grid smooths the
+  metre-scale relief that actually arrests a node.
 - Depth calibration corrects the vehicles, never the grid or the overlays
   draped on it, and only the smooth part of the grid's error.

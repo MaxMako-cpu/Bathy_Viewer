@@ -120,6 +120,23 @@ def main(path):
 
     # -- measuring ------------------------------------------------------------
     print("\nmeasuring:")
+    # Downslope bearing, pinned on ground whose fall direction is known by
+    # construction. This was mirrored about the east-west axis: a slope falling
+    # due north reported due south. East and west were right, because their
+    # north component is zero - which is why nothing caught it until a node
+    # slide traced uphill.
+    from bathy3d.raster import horn_slope as _horn
+    _r, _c = np.mgrid[0:9, 0:9].astype(float)      # row 0 is north
+    for _name, _z, _want in (
+        ("east", -_c, 90.0), ("west", _c, 270.0),
+        ("north", _r, 0.0), ("south", -_r, 180.0),
+        ("north-east", _r - _c, 45.0), ("south-west", _c - _r, 225.0),
+    ):
+        _got = float(_horn(_z, 1.0, 1.0)[1][4, 4])
+        _off = abs((_got - _want + 180.0) % 360.0 - 180.0)
+        check(f"ground falling {_name} reads as falling {_name}", _off < 0.01,
+              f"{_got:.1f} deg, wanted {_want:.1f}")
+
     from bathy3d.measure import MeasureLine, Station, bearing_text, compass
 
     # Degrees beside the compass point, written the way a bearing is written

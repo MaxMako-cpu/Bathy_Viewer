@@ -170,6 +170,9 @@ VIEW = {
     # Off until the operator has tied in and decided it works. A correction
     # applied without being asked for would silently move every vehicle.
     "calib/on": (False, bool),
+    # Like the depth calibration: off until the operator turns it on, because
+    # a corridor drawn on the seabed unasked is a claim nobody made.
+    "nodes/on": (False, bool),
 }
 
 
@@ -188,6 +191,24 @@ def geometry():
 
 def set_geometry(data) -> None:
     set_value("win/geometry", data)
+
+
+def slide_db() -> str:
+    """Where the node-slide case database lives.
+
+    A file, not QSettings: this is a log that grows over years and is worth
+    carrying between machines and vessels, which a registry key is not. It
+    follows the profile, so a test run never writes into the real history.
+    """
+    # Deliberately not QStandardPaths: AppDataLocation folds in the running
+    # application's name, so it answers one path before QApplication exists and
+    # another after - and a database that moves depending on when you ask is
+    # a database that quietly starts empty.
+    base = (os.environ.get("APPDATA")
+            or os.path.join(os.path.expanduser("~"), ".config"))
+    profile = os.environ.get(PROFILE_ENV, "").strip()
+    name = f"slide_cases-{profile}.json" if profile else "slide_cases.json"
+    return os.path.join(base, ORG, name)
 
 
 def dock_state():

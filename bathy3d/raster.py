@@ -220,7 +220,9 @@ class Surface:
         slope = math.degrees(math.atan(math.hypot(dzdx, dzdy)))
         if dzdx == 0.0 and dzdy == 0.0:
             return slope, float("nan")
-        aspect = (math.degrees(math.atan2(-dzdx, -dzdy)) + 360.0) % 360.0
+        # See horn_slope: dzdy is south-positive, so the downslope bearing is
+        # atan2(-dzdx, +dzdy). Negating both mirrored it about east-west.
+        aspect = (math.degrees(math.atan2(-dzdx, dzdy)) + 360.0) % 360.0
         return slope, aspect
 
     def slope_patch(self, x0: float, y0: float, x1: float, y1: float):
@@ -500,7 +502,15 @@ def horn_slope(z: np.ndarray, cell_x: float, cell_y: float | None = None):
     dzdy = ((p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) -
             (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])) / (8.0 * cell_y)
     slope = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
-    # dzdy is built north-positive, so downslope bearing falls straight out.
-    aspect = (np.degrees(np.arctan2(-dzdx, -dzdy)) + 360.0) % 360.0
+    # dzdy is the change per metre SOUTHWARD - it subtracts the northern row
+    # from the southern one, and row 0 is north. So the uphill vector in
+    # (east, north) is (dzdx, -dzdy) and the downslope bearing is
+    # atan2(-dzdx, +dzdy).
+    #
+    # This read -dzdy for both terms, which mirrored every bearing about the
+    # east-west axis: a slope falling due north was reported as falling due
+    # south. Due east and due west came out right, because their north
+    # component is zero, which is exactly why it went unnoticed.
+    aspect = (np.degrees(np.arctan2(-dzdx, dzdy)) + 360.0) % 360.0
     aspect[(dzdx == 0) & (dzdy == 0)] = np.nan
     return slope, aspect

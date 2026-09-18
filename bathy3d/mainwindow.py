@@ -11,7 +11,7 @@ import numpy as np
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import calib, raster
+from . import calib, nodes, raster
 from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
@@ -130,6 +130,207 @@ class Loader(QtCore.QThread):
             self.done.emit(surf)
         except Exception as exc:  # surfaced in a dialog, not swallowed
             self.failed.emit(f"{exc}\n\n{traceback.format_exc(limit=3)}")
+
+
+class SlideDirectionDialog(QtWidgets.QDialog):
+    """Asked once, when a case is opened: did anyone see which way it went?
+
+    Sometimes the pilot watches it go and sometimes the node is simply missing,
+    so the honest options are a bearing or "nobody saw". An observed direction
+    steers the first step of the trace; more usefully, comparing it with the
+    grid's own downslope bearing measures how much the terrain model can be
+    trusted here.
+    """
+
+    def __init__(self, win, label, probe):
+        super().__init__(win)
+        self.setWindowTitle(f"Node slid at {label}")
+        self.setModal(True)
+        v = QtWidgets.QVBoxLayout(self)
+
+        head = QtWidgets.QLabel(
+            f"<b>{label}</b> is standing on ground of "
+            f"<b>{probe.slope:.1f}°</b>, falling away towards "
+            f"<b>{bearing_text(probe.aspect)}° {compass(probe.aspect)}</b>.")
+        head.setWordWrap(True)
+        v.addWidget(head)
+
+        ask = QtWidgets.QLabel("Did anyone see which way the node went?")
+        ask.setWordWrap(True)
+        ask.setObjectName("hint")
+        v.addWidget(ask)
+
+        self.unknown = QtWidgets.QRadioButton("No - nobody saw it move")
+        self.unknown.setChecked(True)
+        v.addWidget(self.unknown)
+
+        row = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.seen = QtWidgets.QRadioButton("Yes, it went towards")
+        h.addWidget(self.seen)
+        self.deg = QtWidgets.QDoubleSpinBox()
+        self.deg.setRange(0.0, 359.9)
+        self.deg.setDecimals(1)
+        self.deg.setSuffix(" °")
+        self.deg.setValue(probe.aspect if math.isfinite(probe.aspect) else 0.0)
+        self.deg.setEnabled(False)
+        h.addWidget(self.deg)
+        self.card = QtWidgets.QLabel(compass(probe.aspect))
+        self.card.setObjectName("mono")
+        h.addWidget(self.card)
+        h.addStretch(1)
+        v.addWidget(row)
+        self.seen.toggled.connect(self.deg.setEnabled)
+        self.deg.valueChanged.connect(
+            lambda d: self.card.setText(compass(d)))
+
+        v.addSpacing(6)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def ask(self):
+        """The observed bearing, NaN for unknown, or None if cancelled."""
+        if self.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        return self.deg.value() if self.seen.isChecked() else float("nan")
+
+
+class NodesDialog(QtWidgets.QDialog):
+    """Open cases at the top, the learned history underneath."""
+
+    COLS = ["ROV", "Placed E", "Placed N", "Slope°", "Downslope", "Seen",
+            "Runout m", "Track°", "Off by°", "When"]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Node slides - open cases and history")
+        self.setModal(False)
+        self.resize(900, 520)
+
+        v = QtWidgets.QVBoxLayout(self)
+        self.summary = QtWidgets.QLabel()
+        self.summary.setWordWrap(True)
+        self.summary.setObjectName("hint")
+        v.addWidget(self.summary)
+
+        self.open_box = QtWidgets.QGroupBox("Open")
+        self.open_v = QtWidgets.QVBoxLayout(self.open_box)
+        v.addWidget(self.open_box)
+
+        v.addWidget(QtWidgets.QLabel("Recovered cases - what the model learns from"))
+        self.table = QtWidgets.QTableWidget(0, len(self.COLS), self)
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeToContents)
+        v.addWidget(self.table, 1)
+
+        row = QtWidgets.QHBoxLayout()
+        self.forget = QtWidgets.QPushButton("Forget selected case")
+        self.forget.setToolTip(
+            "Drop a case that was recorded in error - a wrong position taints "
+            "the fit the same way a bad calibration tie-in does.")
+        self.forget.clicked.connect(self._forget)
+        row.addWidget(self.forget)
+        row.addStretch(1)
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(self.hide)
+        row.addWidget(close)
+        v.addLayout(row)
+        self._open_rows = []
+
+    def refresh(self):
+        win = self.win
+        self.summary.setText(win.slide_model.describe())
+
+        for w in self._open_rows:
+            w.setParent(None)
+        self._open_rows = []
+        if not win.slide_open:
+            lab = QtWidgets.QLabel("No open cases.")
+            lab.setObjectName("hint")
+            self.open_v.addWidget(lab)
+            self._open_rows.append(lab)
+        for slot, case in win.slide_open.items():
+            w = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            name = QtWidgets.QLabel(win.fleet.label(slot))
+            name.setStyleSheet(f"color: {win.fleet.colour(slot)};")
+            h.addWidget(name)
+            path, _l, _r, why = win._predict(case)
+            run = 0.0
+            for i in range(1, len(path)):
+                run += math.hypot(path[i][0] - path[i - 1][0],
+                                  path[i][1] - path[i - 1][1])
+            h.addWidget(QtWidgets.QLabel(
+                f"placed on {case.placed_slope:.1f}°, "
+                f"corridor runs {run:,.0f} m towards "
+                f"{bearing_text(case.placed_aspect)}° - {why}"))
+            h.addStretch(1)
+            found = QtWidgets.QPushButton("Node found here")
+            found.setToolTip("Record this ROV's position as where the node "
+                             "was recovered, and learn from it.")
+            found.clicked.connect(lambda _=False, s=slot: (win.node_found(s),
+                                                           self.refresh()))
+            h.addWidget(found)
+            cancel = QtWidgets.QPushButton("Cancel")
+            cancel.setToolTip("Close the case. Nothing is recorded.")
+            cancel.clicked.connect(lambda _=False, s=slot: (win.node_cancel(s),
+                                                            self.refresh()))
+            h.addWidget(cancel)
+            self.open_v.addWidget(w)
+            self._open_rows.append(w)
+
+        done = [c for c in win.slide_cases if c.confirmed]
+        self.table.setRowCount(len(done))
+        for r, c in enumerate(done):
+            cells = [
+                win.fleet.label(c.rov), f"{c.placed_x:,.1f}",
+                f"{c.placed_y:,.1f}", f"{c.placed_slope:.1f}",
+                bearing_text(c.placed_aspect),
+                "--" if not math.isfinite(c.observed_dir)
+                else bearing_text(c.observed_dir),
+                f"{c.runout:,.1f}", bearing_text(c.track),
+                f"{c.track_error:+.0f}",
+                time.strftime("%d %b %H:%M", time.localtime(c.found_at))
+                if math.isfinite(c.found_at) else "",
+            ]
+            for col, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if col:
+                    item.setTextAlignment(QtCore.Qt.AlignRight
+                                          | QtCore.Qt.AlignVCenter)
+                else:
+                    item.setForeground(QtGui.QColor(win.fleet.colour(c.rov)))
+                # A track that missed the grid's downslope badly is the case
+                # that widens every future corridor - worth seeing.
+                if col == 8 and math.isfinite(c.track_error) \
+                        and abs(c.track_error) > 30:
+                    item.setForeground(QtGui.QColor("#e8663d"))
+                self.table.setItem(r, col, item)
+        self.forget.setEnabled(bool(done))
+
+    def _forget(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()},
+                      reverse=True)
+        done = [c for c in self.win.slide_cases if c.confirmed]
+        for r in rows:
+            if 0 <= r < len(done):
+                try:
+                    self.win.slide_cases.remove(done[r])
+                except ValueError:
+                    pass
+        if rows:
+            self.win._refit_slides()
+            self.refresh()
 
 
 class FeedDialog(QtWidgets.QDialog):
@@ -434,6 +635,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view.targets.set_styles(self.fleet.styles())
         self._fleet_dialog = None
         self._feed_dialog = None
+        # Node slides: the whole history, and the open cases keyed by ROV slot.
+        self.slide_db = prefs.slide_db()
+        self.slide_cases = nodes.load_cases(self.slide_db)
+        self.slide_model = nodes.fit(self.slide_cases)
+        self.slide_open: dict = {}
+        self._nodes_dialog = None
         self.calib = calib.Calibration(prefs.view("calib/on"))
         self.calib.load(prefs.tiepoints())
         # Tie-ins outlive a session, so points saved before the slots were made
@@ -1020,6 +1227,53 @@ class MainWindow(QtWidgets.QMainWindow):
         fm.addSeparator()
         fm.addAction("&Ports and status…").triggered.connect(self.show_feed)
 
+        self._build_nodes_menu()
+
+    def _build_nodes_menu(self):
+        """Node slides: mark one, get a search corridor, record the recovery.
+
+        Off until switched on, like the depth calibration - a corridor drawn on
+        the seabed unasked is a claim nobody made.
+        """
+        nm = self.menuBar().addMenu("&Nodes")
+        self.act_nodes = nm.addAction("&Enable node slide tracking")
+        self.act_nodes.setCheckable(True)
+        self.act_nodes.setChecked(prefs.view("nodes/on"))
+        self.act_nodes.setToolTip(
+            "Mark a node as slid and get a search corridor down the fall line "
+            "from where it was placed.")
+        self.act_nodes.toggled.connect(self._nodes_toggled)
+        nm.addSeparator()
+
+        # One per ROV that can place a node. A TMS carries no manipulator.
+        self.act_slid = {}
+        for slot in BOTTOM_ORDER:
+            act = nm.addAction("")
+            act.triggered.connect(lambda _=False, s=slot: self.node_slid(s))
+            self.act_slid[slot] = act
+        nm.addSeparator()
+        nm.addAction("Open cases and &history…").triggered.connect(
+            self.show_nodes)
+        nm.addAction("&Export case database (CSV)…").triggered.connect(
+            self.export_slides)
+        self._relabel_slide_actions()
+        self._sync_nodes_menu()
+
+    def _relabel_slide_actions(self):
+        for slot, act in self.act_slid.items():
+            label = self.fleet.label(slot)
+            act.setText(f"Node slid at {label}…")
+            act.setToolTip(
+                f"Record that {label} has just lost a node, and predict where "
+                "it went from where it is standing now.")
+
+    def _sync_nodes_menu(self):
+        on = self.act_nodes.isChecked()
+        for act in self.act_slid.values():
+            act.setEnabled(on)
+        if self._nodes_dialog is not None:
+            self._nodes_dialog.refresh()
+
     def _relabel_tie_actions(self):
         """Menu entries follow a rename, so they name the vehicle you know."""
         for nm, act in self.act_tie.items():
@@ -1030,6 +1284,158 @@ class MainWindow(QtWidgets.QMainWindow):
                 "position right now. Press only when it is on the bottom.")
 
     # -------------------------------------------------------------- vehicles
+
+    # ---------------------------------------------------------- node slides
+
+    def _nodes_toggled(self, on):
+        prefs.set_view("nodes/on", bool(on))
+        self._sync_nodes_menu()
+        if not on:
+            self.view.clear_slides()
+        else:
+            for slot in list(self.slide_open):
+                self._draw_case(slot)
+            self.statusBar().showMessage(self.slide_model.describe(), 12000)
+
+    def _rov_position(self, slot):
+        """Where a vehicle is now, with the reason if it cannot be used."""
+        s = self.view.surface
+        if s is None:
+            return None, "Open a grid first - the prediction runs on terrain."
+        en = self._positions.get(slot)
+        if en is None:
+            return None, f"No position has arrived for {self.fleet.label(slot)}."
+        p = s.probe(*en)
+        if p is None or not math.isfinite(p.z):
+            return None, (f"{self.fleet.label(slot)} is off the grid, so there "
+                          "is no slope to slide down.")
+        return (en[0], en[1], p), None
+
+    def node_slid(self, slot):
+        """Open a case at this ROV's position and predict where the node went."""
+        if slot in self.slide_open:
+            QtWidgets.QMessageBox.information(
+                self, "Already open",
+                f"{self.fleet.label(slot)} already has an open case. Close it "
+                "from Nodes › Open cases before starting another.")
+            return
+        where, why = self._rov_position(slot)
+        if where is None:
+            QtWidgets.QMessageBox.information(self, "Cannot predict", why)
+            return
+        x, y, p = where
+
+        seen = SlideDirectionDialog(self, self.fleet.label(slot), p).ask()
+        if seen is None:
+            return                      # the pilot thought better of it
+
+        case = nodes.SlideCase(
+            rov=slot, placed_x=float(x), placed_y=float(y),
+            placed_z=float(p.z), placed_slope=float(p.slope),
+            placed_aspect=float(p.aspect), observed_dir=seen,
+            grid=self._path or "")
+        self.slide_open[slot] = case
+        self._draw_case(slot)
+        self._sync_nodes_menu()
+        self.show_nodes()
+
+        heading = seen if math.isfinite(seen) else p.slope and p.aspect
+        self.statusBar().showMessage(
+            f"{self.fleet.label(slot)}: node slid on {p.slope:.1f} deg ground, "
+            f"downslope bearing {compass(p.aspect)} {bearing_text(p.aspect)}. "
+            + self.slide_model.describe(), 20000)
+
+    def _predict(self, case):
+        """The traced fall line and corridor for one open case."""
+        s = self.view.surface
+        path, why = nodes.trace(s, case.placed_x, case.placed_y,
+                                self.slide_model.arrest_deg,
+                                start_dir=case.observed_dir)
+        left, right = nodes.corridor(path, self.slide_model.spread_deg)
+        return path, left, right, why
+
+    def _draw_case(self, slot):
+        case = self.slide_open.get(slot)
+        if case is None or not self.act_nodes.isChecked():
+            return
+        path, left, right, _why = self._predict(case)
+        self.view.draw_slide(slot, path, left, right,
+                             self.fleet.colour(slot))
+
+    def node_found(self, slot):
+        """Close a case with the recovery position - this is what teaches it."""
+        case = self.slide_open.get(slot)
+        if case is None:
+            return
+        where, why = self._rov_position(slot)
+        if where is None:
+            QtWidgets.QMessageBox.information(self, "Cannot record", why)
+            return
+        x, y, p = where
+        if math.hypot(x - case.placed_x, y - case.placed_y) < 0.5:
+            if QtWidgets.QMessageBox.question(
+                    self, "Same position?",
+                    f"{self.fleet.label(slot)} is within half a metre of where "
+                    "the node was placed. Record this as a recovery anyway?"
+                    ) != QtWidgets.QMessageBox.Yes:
+                return
+        case.found_x, case.found_y = float(x), float(y)
+        case.found_z, case.found_slope = float(p.z), float(p.slope)
+        case.found_at = time.time()
+        self.slide_cases.append(case)
+        self.slide_open.pop(slot, None)
+        self.view.clear_slide(slot)
+        self._refit_slides()
+        self.statusBar().showMessage(
+            f"Recovered {case.runout:,.0f} m from where it was placed, on a "
+            f"track of {bearing_text(case.track)} against a predicted "
+            f"{bearing_text(case.placed_aspect)} - out by "
+            f"{abs(case.track_error):.0f} deg. " + self.slide_model.describe(),
+            25000)
+
+    def node_cancel(self, slot):
+        """Give up on a case. Nothing is recorded: a failed search taught us
+        nothing we asked to keep."""
+        if self.slide_open.pop(slot, None) is None:
+            return
+        self.view.clear_slide(slot)
+        self._sync_nodes_menu()
+        self.statusBar().showMessage(
+            f"{self.fleet.label(slot)}: case closed, nothing recorded.", 8000)
+
+    def _refit_slides(self):
+        self.slide_model = nodes.fit(self.slide_cases)
+        try:
+            nodes.save_cases(self.slide_db, self.slide_cases)
+        except OSError as exc:
+            self.statusBar().showMessage(
+                f"Could not write the case database: {exc}", 15000)
+        for slot in list(self.slide_open):
+            self._draw_case(slot)
+        self._sync_nodes_menu()
+
+    def show_nodes(self):
+        if self._nodes_dialog is None:
+            self._nodes_dialog = NodesDialog(self)
+        self._nodes_dialog.refresh()
+        self._nodes_dialog.show()
+        self._nodes_dialog.raise_()
+        self._nodes_dialog.activateWindow()
+
+    def export_slides(self):
+        if not self.slide_cases:
+            QtWidgets.QMessageBox.information(
+                self, "Nothing to export",
+                "No recovered cases yet. The database fills as nodes are "
+                "found.")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export slide cases", "slide_cases.csv", "CSV (*.csv)")
+        if path:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(nodes.to_csv(self.slide_cases))
+            self.statusBar().showMessage(
+                f"{len(self.slide_cases)} cases written to {path}", 10000)
 
     def show_feed(self):
         if self._feed_dialog is None:
@@ -1078,6 +1484,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(self.fleet.label(nm))
                 item.setForeground(QtGui.QColor(self.fleet.colour(nm)))
         self._relabel_tie_actions()
+        self._relabel_slide_actions()
         if self._calib_dialog is not None:
             self._calib_dialog.refresh()
         if self._fleet_dialog is not None:
@@ -1901,7 +2308,8 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._closing = True
-        for attr in ("_fleet_dialog", "_calib_dialog", "_feed_dialog"):
+        for attr in ("_fleet_dialog", "_calib_dialog", "_feed_dialog",
+                     "_nodes_dialog"):
             dlg = getattr(self, attr, None)
             if dlg is not None:
                 dlg.close()
