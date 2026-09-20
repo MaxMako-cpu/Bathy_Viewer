@@ -352,9 +352,32 @@ placed 2700 km away takes the camera with it, so it reads `off grid` instead.
 
 The two feeds are independent and carry no timestamps, so there is no honest
 way to time-align them. Each vehicle keeps its latest position and its latest
-depth, and the scene is rebuilt from whichever has just changed. A depth more
-than 15 s old is treated as gone: the vehicle rests on the seabed and its
-marker dims, rather than hanging at a frozen depth while looking live.
+depth, and the scene is rebuilt from whichever has just changed.
+
+A depth more than 15 s old is treated as stale: the marker **dims** and the Age
+column climbs, but the vehicle **stays where the feed last put it**. It used to
+be dropped onto the seabed, which on this ground is a 40 m fall it never made —
+240 units of screen at the default exaggeration — and it snapped back the
+moment the feed returned. Holding the last reading asserts only what was
+actually reported. A vehicle that has *never* sent a depth is still rested on
+the seabed, because there is nothing to hold.
+
+**Markers glide between fixes.** The feed is a 1 Hz step function — measured on
+a real capture: 1.000 s between records, 0.635 m of travel in each — so a
+marker drawn only where the last fix put it sits still for a second and then
+teleports. Each fix instead starts a glide from wherever the marker is drawn to
+where the fix says it is, over the interval the feed has actually been running
+at, so it follows the sender rather than assuming a rate.
+
+It interpolates **between two reported fixes and never past the newest one**:
+once a marker arrives it waits. Nothing is invented beyond "it was here, then
+it was there". A fix landing mid-glide carries on from what is on screen rather
+than snapping back, and after a long dropout the glide is capped at 2.5 s so a
+returning vehicle arrives promptly instead of crawling.
+
+The reported position is kept separate from the drawn one throughout: the
+table, the calibration and a node slide case all read what the feed said, never
+the interpolation.
 
 **The Alt column is the one to watch.** Altitude is seabed depth minus vehicle
 depth, and it cannot be negative — a vehicle reading as *below* the bottom

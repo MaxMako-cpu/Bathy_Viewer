@@ -67,6 +67,19 @@ TRAIL_DRAW_MAX = 4000
 #: Hard ceiling on retained points, in case a feed runs far faster than 1 Hz.
 MAX_TRAIL_POINTS = 400_000
 
+#: Bounds on how long a marker takes to glide from one fix to the next.
+#:
+#: The feed is a 1 Hz step function - measured on a real capture: 1.000 s
+#: between records, 0.635 m of travel in each - so without this a vehicle sits
+#: still for a second and then teleports. The glide runs between two *reported*
+#: fixes and never past the newest one, so it invents no position beyond "it
+#: was here, then it was there".
+#:
+#: Capped because a feed that has been away for a minute must not spend a
+#: minute crawling back; it should arrive promptly and then hold.
+MIN_GLIDE_S = 0.15
+MAX_GLIDE_S = 2.5
+
 
 #: Depth bias for things drawn over the terrain. Larger means nearer the
 #: viewer, so these are layers, not a single "on top": a slope box is a sheet
@@ -117,6 +130,19 @@ class Target:
     updated_at: float = 0.0       # monotonic clock of the last fix
     stem: bool = True             # draw a drop line down to the seabed
 
+    #: Where it is *drawn*, as against x/y/z which are what the feed reported.
+    #: Everything else - the table, the calibration, a slide case - reads the
+    #: reported values, so only the picture is interpolated.
+    dx: float = float("nan")
+    dy: float = float("nan")
+    dz: float = float("nan")
+    #: The glide currently under way: where it started and when.
+    gx: float = float("nan")
+    gy: float = float("nan")
+    gz: float = float("nan")
+    glide_at: float = 0.0
+    glide_for: float = 0.0
+
     @property
     def fix(self) -> bool:
         return math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.z)
@@ -159,6 +185,8 @@ class TargetLayer:
         #: Chains switched off. Anything not in a chain - the vessel - is
         #: unaffected, since it belongs to both ROVs and to neither.
         self.hidden_chains: set[str] = set()
+        #: Link pairs seen so far, so advance() can redraw them mid-glide.
+        self._links: dict = {}
         self.tethers_visible = True
 
     # ------------------------------------------------------------------ setup
@@ -220,8 +248,8 @@ class TargetLayer:
             p = self.surface.probe(x, y)
             z = p.z if p else float("nan")
         now = time.monotonic()
+        gap = now - t.updated_at if t.updated_at else 0.0
         if t.fix and t.updated_at:
-            gap = now - t.updated_at
             step = math.hypot(float(x) - t.x, float(y) - t.y)
             if gap > 0.05:
                 # Lightly smoothed: the sender repeats the previous position
@@ -231,6 +259,16 @@ class TargetLayer:
                     t.speed = 0.6 * t.speed + 0.4 * inst
                 else:
                     t.speed = inst
+        # Glide from wherever it is drawn *now* to the new fix, so a fix that
+        # lands mid-glide carries on from what is on screen rather than
+        # snapping back. The duration is the interval the feed has actually
+        # been running at, so this follows the sender rather than assuming it.
+        t.gx = t.dx if math.isfinite(t.dx) else float(x)
+        t.gy = t.dy if math.isfinite(t.dy) else float(y)
+        t.gz = t.dz if math.isfinite(t.dz) else float(z)
+        t.glide_at = now
+        t.glide_for = (min(max(gap, MIN_GLIDE_S), MAX_GLIDE_S)
+                       if t.updated_at and gap > 0 else 0.0)
         t.updated_at = now
         t.x, t.y, t.z, t.heading = float(x), float(y), float(z), float(heading)
         t.stale = False
@@ -242,6 +280,40 @@ class TargetLayer:
             t.trail.clear()
         self._place(t)
         return t
+
+    def advance(self, now: float | None = None) -> bool:
+        """Step every glide forward. True if anything actually moved.
+
+        Called at frame rate. The fraction is clamped to 1, so a marker that
+        has arrived sits at its last reported fix and waits - this interpolates
+        between two real positions and never extrapolates past the newest one.
+        """
+        now = time.monotonic() if now is None else now
+        moved = False
+        for t in self.targets.values():
+            if not t.fix:
+                continue
+            if t.glide_for > 0.0:
+                f = (now - t.glide_at) / t.glide_for
+                f = 0.0 if f < 0.0 else (1.0 if f > 1.0 else f)
+            else:
+                f = 1.0
+            if not math.isfinite(t.gx):
+                t.gx, t.gy, t.gz = t.x, t.y, t.z
+            nx = t.gx + (t.x - t.gx) * f
+            ny = t.gy + (t.y - t.gy) * f
+            nz = t.gz + (t.z - t.gz) * f
+            if (not math.isfinite(t.dx) or abs(nx - t.dx) > 1e-6
+                    or abs(ny - t.dy) > 1e-6 or abs(nz - t.dz) > 1e-6):
+                t.dx, t.dy, t.dz = nx, ny, nz
+                moved = True
+        if moved:
+            for t in self.targets.values():
+                if t.fix:
+                    self._place(t, trail=False)
+            if self._links:
+                self.draw_links(self._links)
+        return moved
 
     def _trim(self, t: Target, now: float) -> None:
         cutoff = now - self.trail_seconds
@@ -330,6 +402,8 @@ class TargetLayer:
                     pass
         self._actors.clear()
         self.targets.clear()
+        self._tms_scales.clear()
+        self._links.clear()
 
     def set_visible(self, on: bool) -> None:
         self.visible = on
@@ -423,9 +497,12 @@ class TargetLayer:
         """A thin dotted line between each pair of bodies.
 
         Used for both the tethers (TMS down to its ROV) and the umbilicals
-        (vessel down to each TMS), so the whole chain reads as one line.
+        (vessel down to each TMS), so the whole chain reads as one line. The
+        pairs are remembered so a glide can carry the lines along with the
+        bodies they join, rather than leaving them behind for a second.
         """
-        for lower, upper in pairs.items():
+        self._links.update(pairs)
+        for lower, upper in self._links.items():
             name = f"link:{lower}"
             self.plotter.remove_actor(name, render=False)
             a, b = self.targets.get(lower), self.targets.get(upper)
@@ -436,8 +513,8 @@ class TargetLayer:
                     and self._chain_visible(lower)
                     and self._chain_visible(upper)):
                 continue
-            pa = (*self.surface.local_from_crs(a.x, a.y), a.z * self._ve)
-            pb = (*self.surface.local_from_crs(b.x, b.y), b.z * self._ve)
+            pa = (*self.surface.local_from_crs(a.dx, a.dy), a.dz * self._ve)
+            pb = (*self.surface.local_from_crs(b.dx, b.dy), b.dz * self._ve)
             mesh = self._dashed(pa, pb)
             if mesh is None:
                 continue
@@ -453,17 +530,23 @@ class TargetLayer:
             return pv.Cone(direction=(0, 1, 0), height=3.2 * s, radius=1.1 * s, resolution=4)
         return pv.Sphere(radius=0.9 * s, theta_resolution=18, phi_resolution=18)
 
-    def _place(self, t: Target) -> None:
-        """Move every actor belonging to one target.
+    def _place(self, t: Target, trail: bool = True) -> None:
+        """Move every actor belonging to one target to its *drawn* position.
 
-        The marker rides on the actor transform (cheap, called at fix rate).
-        Label, drop line and trail change shape, so they are re-added under the
-        same ``name`` - pyvista swaps the actor rather than stacking a new one.
+        Everything here rides on an actor transform or an in-place point
+        update, so it is cheap enough to run at frame rate while a marker
+        glides between fixes. ``trail=False`` skips the one thing that is not:
+        rebuilding a polyline of up to 4 000 vertices. The trail only changes
+        when a real fix lands anyway, and its newest segment is under a metre
+        long, so the marker gliding a fraction behind its own tail is not
+        something anyone can see.
         """
         if self.surface is None or not t.fix:
             return
-        lx, ly = self.surface.local_from_crs(t.x, t.y)
-        lz = t.z * self._ve
+        if not math.isfinite(t.dx):
+            t.dx, t.dy, t.dz = t.x, t.y, t.z
+        lx, ly = self.surface.local_from_crs(t.dx, t.dy)
+        lz = t.dz * self._ve
         bag = self._actors.setdefault(t.name, {})
 
         if t.kind == "cylinder":
@@ -494,36 +577,67 @@ class TargetLayer:
         else:
             # Screen-constant dots. A world-space glyph big enough to see across
             # a 131 km grid would be wider than the vehicles are apart.
-            bag["marker"] = self.plotter.add_points(
-                np.array([[lx, ly, lz]], dtype=float), color=t.color,
-                point_size=BASE_POINT_PX * t.size, render_points_as_spheres=True,
-                name=f"tgt:{t.name}", render=False, pickable=False,
-                opacity=0.45 if t.stale else 1.0,
-            )
+            #
+            # Built once at the origin and moved by its transform, not re-added
+            # each time: re-creating the actor every frame of a glide costs far
+            # more than moving it, and made the marker flicker.
+            if "marker" not in bag:
+                bag["marker"] = self.plotter.add_points(
+                    np.zeros((1, 3), dtype=float), color=t.color,
+                    point_size=BASE_POINT_PX * t.size,
+                    render_points_as_spheres=True,
+                    name=f"tgt:{t.name}", render=False, pickable=False,
+                )
+            bag["marker"].SetPosition(lx, ly, lz)
+            bag["marker"].GetProperty().SetOpacity(0.45 if t.stale else 1.0)
         bag["marker"].SetVisibility(self.shows(t))
         draw_on_top(bag["marker"])
 
-        bag["label"] = self.plotter.add_point_labels(
-            np.array([[lx, ly, lz]], dtype=float), [t.shown], name=f"lbl:{t.name}",
-            font_size=11, text_color=t.color, shape=None, show_points=False,
-            always_visible=True, render=False,
-        )
+        # The label is a text actor, which is expensive to rebuild, so its one
+        # point is moved in place instead.
+        lpd = bag.get("label_pd")
+        if lpd is None or bag.get("label_text") != t.shown:
+            lpd = pv.PolyData(np.array([[lx, ly, lz]], dtype=float))
+            lpd["labels"] = [t.shown]
+            bag["label_pd"] = lpd
+            bag["label_text"] = t.shown
+            bag["label"] = self.plotter.add_point_labels(
+                lpd, "labels", name=f"lbl:{t.name}",
+                font_size=11, text_color=t.color, shape=None,
+                show_points=False, always_visible=True, render=False,
+            )
+        else:
+            lpd.points[0] = (lx, ly, lz)
+            lpd.Modified()
         bag["label"].SetVisibility(self.shows(t))
 
-        # Drop line to the seabed, so depth reads against the terrain.
-        p = self.surface.probe(t.x, t.y)
-        if t.stem and p is not None and abs(t.z - p.z) > 1e-6:
-            bag["stem"] = self.plotter.add_mesh(
-                pv.Line((lx, ly, p.z * self._ve), (lx, ly, lz)), color=t.color,
-                line_width=1, opacity=0.5, name=f"stem:{t.name}",
-                render=False, pickable=False,
-            )
+        # Drop line to the seabed, so depth reads against the terrain. Probed
+        # under where the marker is drawn, so the foot of the line stays under
+        # the body while it glides.
+        p = self.surface.probe(t.dx, t.dy)
+        if t.stem and p is not None and abs(t.dz - p.z) > 1e-6:
+            foot, head = (lx, ly, p.z * self._ve), (lx, ly, lz)
+            spd = bag.get("stem_pd")
+            if spd is None:
+                spd = pv.Line(foot, head)
+                bag["stem_pd"] = spd
+                bag["stem"] = self.plotter.add_mesh(
+                    spd, color=t.color, line_width=1, opacity=0.5,
+                    name=f"stem:{t.name}", render=False, pickable=False,
+                )
+                draw_on_top(bag["stem"])
+            else:
+                spd.points[0] = foot
+                spd.points[1] = head
+                spd.Modified()
             bag["stem"].SetVisibility(self.shows(t))
-            draw_on_top(bag["stem"])
         elif "stem" in bag:
             # Back on the seabed - drop the line rather than leaving it hanging.
             self.plotter.remove_actor(bag.pop("stem"), render=False)
+            bag.pop("stem_pd", None)
 
+        if not trail:
+            return
         if len(t.trail) > 1:
             pts = np.asarray(t.trail, dtype=float)[:, :3].copy()
             if len(pts) > TRAIL_DRAW_MAX:

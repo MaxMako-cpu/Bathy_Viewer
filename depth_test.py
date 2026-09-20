@@ -325,18 +325,28 @@ check("the feed refills the layer after a reload", len(tg) == len(ORDER),
 
 print("\nwhen the depth feed stops:")
 row = {win.tgt_table.item(r, 0).text(): r for r in range(win.tgt_table.rowCount())}
-before = tg["ROV1"].z
+held = tg["ROV1"].z
 win._depths["ROV1"] = (win._depths["ROV1"][0], time.monotonic() - 99)
 sock.sendto(rec(BASE).encode(), ("127.0.0.1", PPORT))
 for _ in range(40):
     pump(80)
-    if abs(tg["ROV1"].z - before) > 1e-6:
+    if tg["ROV1"].stale:
         break
 p = s.probe(tg["ROV1"].x, tg["ROV1"].y)
-check("a stale depth falls back to the seabed",
-      abs(tg["ROV1"].z - p.z) < 1e-6,
-      f"z {tg['ROV1'].z:,.1f} vs seabed {p.z:,.1f}")
+# It used to be dropped onto the seabed, which on this ground is a 40 m fall
+# the vehicle never made - 240 units of screen at x6 exaggeration, and it
+# snapped straight back when the feed returned. Holding the last reading
+# asserts only what was reported; the dimming and the Age column say it is old.
+check("a stale depth is held, not dropped to the seabed",
+      abs(tg["ROV1"].z - held) < 1e-6,
+      f"z {tg['ROV1'].z:,.1f}, seabed would have been {p.z:,.1f}")
+check("so it does not fall the height of its altitude",
+      abs(tg["ROV1"].z - p.z) > 1.0,
+      f"{abs(tg['ROV1'].z - p.z):,.1f} m above the bottom")
 check("and the marker is dimmed", tg["ROV1"].stale)
+check("its depth still reads in the table",
+      win.tgt_table.item(ORDER.index("ROV1"), 3).text() not in ("--", ""),
+      win.tgt_table.item(ORDER.index("ROV1"), 3).text())
 
 sock.close()
 win.listen_b.setChecked(False)

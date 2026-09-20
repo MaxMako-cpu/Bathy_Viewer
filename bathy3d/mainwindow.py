@@ -655,6 +655,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._configure_targets()
         self.statusBar().showMessage("No grid loaded - File › Open, or drop a GeoTIFF here")
 
+        # Frame-rate glide between fixes. advance() returns False the moment
+        # every marker has arrived, so an idle window renders nothing and this
+        # costs a dictionary walk every 40 ms.
+        self._anim_timer = QtCore.QTimer(self)
+        self._anim_timer.timeout.connect(self._animate)
+        self._anim_timer.start(40)
+
         self._stale_timer = QtCore.QTimer(self)
         self._stale_timer.timeout.connect(self._check_stale)
         self._stale_timer.start(1000)
@@ -2077,8 +2084,10 @@ class MainWindow(QtWidgets.QMainWindow):
             fresh = depth is not None and (now - age) < DEPTH_STALE_AFTER
             # Correct before anything is derived from it, so the marker, the
             # drop line, the altitude and the table all agree on one depth.
+            # Corrected whether it is fresh or held: a depth does not stop
+            # needing the calibration just because it stopped arriving.
             far = False
-            if fresh and self.calib.active:
+            if depth is not None and self.calib.active:
                 far = self.calib.model.outside(depth)
                 depth = self.calib.apply(depth)
             if nm == "Vessel":
@@ -2092,12 +2101,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 # feed and the grid disagree about the zone, and a vessel
                 # placed 2700 km away would take the camera with it.
                 z, shown, alt = (None if p is None else 0.0), 0.0, None
-            elif fresh:
+            elif depth is not None:
+                # Fresh or held, it is drawn where the feed last said it was.
+                #
+                # A stale depth used to drop the vehicle onto the seabed, which
+                # on this ground is a 40 m fall it never made - and at x6
+                # exaggeration, 240 units of the screen. Holding the last
+                # reading asserts only what was actually reported, and the
+                # marker dims and the Age column climbs to say it is old.
                 z, shown = -depth, depth
                 alt = None if seabed is None else seabed - depth
             else:
-                # Depth missing or stale: rest it on the seabed rather than
-                # leave it hanging at a frozen depth.
+                # Nothing has ever been sent for this one, so there is no
+                # depth to hold. The seabed is the only placement that is not
+                # invented.
                 z, shown, alt = (None if p is None else p.z), seabed, None
 
             if z is None:
@@ -2189,6 +2206,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for r, nm in enumerate(ORDER):
             owner = CHAIN_OF.get(nm)
             self.tgt_table.setRowHidden(r, owner is not None and owner in hidden)
+
+    def _animate(self):
+        """Advance the glide, and redraw only if something actually moved."""
+        if getattr(self, "_closing", False):
+            return
+        try:
+            if self.view.targets.advance():
+                self.view.plotter.render()
+        except Exception:
+            pass
 
     def _tms_toggled(self, on):
         self.view.targets.set_tms_visible(on)
@@ -2402,6 +2429,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._closing = True
+        self._anim_timer.stop()
         for attr in ("_fleet_dialog", "_calib_dialog", "_feed_dialog",
                      "_nodes_dialog"):
             dlg = getattr(self, attr, None)
