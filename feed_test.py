@@ -227,6 +227,27 @@ def part2_live(grid):
           (t.dx, t.dy, t.dz) == parked,
           f"{t.dx:,.3f} vs {parked[0]:,.3f}")
 
+    # The property the first attempt at this broke. The depth feed redraws
+    # every body without moving any of them, and the sender repeats a position
+    # when it has no new one. Timing the glide from those made it measure 0.5 s
+    # while positions really changed once a second, so the marker crossed the
+    # step in half the time and then froze - a stutter worse than the plain
+    # 1 Hz step it was meant to cure.
+    was_at, was_for = t.glide_at, t.glide_for
+    win.view.targets.update("ROV1", t.x, t.y, t.z)        # same position again
+    check("a repeated position does not restart the glide",
+          t.glide_at == was_at and t.glide_for == was_for,
+          f"{t.glide_at:.3f}/{t.glide_for:.3f} vs {was_at:.3f}/{was_for:.3f}")
+    win.view.targets.update("ROV1", t.x, t.y, t.z - 3.0)  # a real depth change
+    check("but a real change does", t.glide_at != was_at)
+
+    # A jump too large to have been travelled is placed, not slid.
+    from bathy3d.targets import SNAP_M
+    win.view.targets.update("ROV1", t.x + SNAP_M * 3, t.y, t.z)
+    win.view.targets.advance()
+    check("an impossible jump is placed straight away, not slid across",
+          abs(t.dx - t.x) < 1e-6, f"{t.dx:,.1f} vs {t.x:,.1f}")
+
     print("\nthe feed's settings live in the menu bar:")
     menus = [a.text() for a in win.menuBar().actions()]
     check("there is a Feed menu", any("Feed" in m for m in menus), str(menus))

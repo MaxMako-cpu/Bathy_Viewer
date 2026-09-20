@@ -366,8 +366,19 @@ the seabed, because there is nothing to hold.
 a real capture: 1.000 s between records, 0.635 m of travel in each — so a
 marker drawn only where the last fix put it sits still for a second and then
 teleports. Each fix instead starts a glide from wherever the marker is drawn to
-where the fix says it is, over the interval the feed has actually been running
-at, so it follows the sender rather than assuming a rate.
+where the fix says it is, over the interval the position has actually been
+*changing* at — which for a vehicle holding course is constant velocity, the
+smoothest thing that is also true.
+
+**Measured between changes, not between calls.** The two feeds are interleaved
+and the scene is rebuilt whenever either fires, and the sender repeats a
+position when it has no new one — so timing the calls measured 0.5 s while
+positions really changed once a second. The marker crossed the whole step in
+half a second and froze for half a second, twice a second: per-frame movement
+swung from 0 to 51 mm about a 25 mm mean, a stutter worse than the plain 1 Hz
+step it was meant to cure. Smoothing exponentially instead removed the freeze
+but surged after each fix and eased before the next, which pumps just as
+visibly. Restarting the glide only on real movement gives 0.14.
 
 It interpolates **between two reported fixes and never past the newest one**:
 once a marker arrives it waits. Nothing is invented beyond "it was here, then

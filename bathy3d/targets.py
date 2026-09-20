@@ -67,18 +67,31 @@ TRAIL_DRAW_MAX = 4000
 #: Hard ceiling on retained points, in case a feed runs far faster than 1 Hz.
 MAX_TRAIL_POINTS = 400_000
 
-#: Bounds on how long a marker takes to glide from one fix to the next.
+#: Bounds on how long a marker takes to cross from one fix to the next.
 #:
-#: The feed is a 1 Hz step function - measured on a real capture: 1.000 s
-#: between records, 0.635 m of travel in each - so without this a vehicle sits
-#: still for a second and then teleports. The glide runs between two *reported*
-#: fixes and never past the newest one, so it invents no position beyond "it
-#: was here, then it was there".
+#: The glide is linear over the interval the position has actually been
+#: changing at, which for a vehicle holding course is constant velocity - the
+#: smoothest thing that is also true.
 #:
-#: Capped because a feed that has been away for a minute must not spend a
-#: minute crawling back; it should arrive promptly and then hold.
+#: The interval must be measured between *changes*, not between calls. The two
+#: feeds are interleaved and the scene is rebuilt whenever either fires, so
+#: timing the calls measured 0.5 s while positions really changed once a
+#: second: the marker crossed the whole step in half a second and then froze
+#: for half a second, twice a second. Measured, per-frame movement swung from
+#: 0 to 51 mm about a 25 mm mean - a stutter worse than the plain 1 Hz step it
+#: was meant to cure. Smoothing exponentially instead removed the freeze but
+#: surged after each fix and eased off before the next, which pumps just as
+#: visibly.
 MIN_GLIDE_S = 0.15
 MAX_GLIDE_S = 2.5
+
+#: A change smaller than this is the sender repeating itself, not movement.
+STILL_M = 1e-4
+
+#: Further than this and the marker is put straight there rather than sliding.
+#: A jump that big is a feed restarting or a vehicle being relocated, not
+#: something that travelled, and sliding across the map would be a lie.
+SNAP_M = 250.0
 
 
 #: Depth bias for things drawn over the terrain. Larger means nearer the
@@ -136,12 +149,17 @@ class Target:
     dx: float = float("nan")
     dy: float = float("nan")
     dz: float = float("nan")
-    #: The glide currently under way: where it started and when.
+    #: The glide under way: where it started, when, and for how long.
     gx: float = float("nan")
     gy: float = float("nan")
     gz: float = float("nan")
     glide_at: float = 0.0
     glide_for: float = 0.0
+    #: When the reported position last actually changed, and how often it has
+    #: been changing - which is the rate the sender is really running at.
+    changed_at: float = 0.0
+    fix_gap: float = float("nan")
+
 
     @property
     def fix(self) -> bool:
@@ -187,6 +205,7 @@ class TargetLayer:
         self.hidden_chains: set[str] = set()
         #: Link pairs seen so far, so advance() can redraw them mid-glide.
         self._links: dict = {}
+        self._advanced_at = 0.0
         self.tethers_visible = True
 
     # ------------------------------------------------------------------ setup
@@ -259,16 +278,25 @@ class TargetLayer:
                     t.speed = 0.6 * t.speed + 0.4 * inst
                 else:
                     t.speed = inst
-        # Glide from wherever it is drawn *now* to the new fix, so a fix that
-        # lands mid-glide carries on from what is on screen rather than
-        # snapping back. The duration is the interval the feed has actually
-        # been running at, so this follows the sender rather than assuming it.
-        t.gx = t.dx if math.isfinite(t.dx) else float(x)
-        t.gy = t.dy if math.isfinite(t.dy) else float(y)
-        t.gz = t.dz if math.isfinite(t.dz) else float(z)
-        t.glide_at = now
-        t.glide_for = (min(max(gap, MIN_GLIDE_S), MAX_GLIDE_S)
-                       if t.updated_at and gap > 0 else 0.0)
+        # Only a real change restarts the glide. The sender repeats a position
+        # when it has no new one, and the depth feed redraws every body without
+        # moving any of them; treating those as fixes is what made the marker
+        # stutter.
+        moved_far = (not t.fix
+                     or math.hypot(float(x) - t.x, float(y) - t.y) > STILL_M
+                     or abs(float(z) - t.z) > STILL_M)
+        if moved_far:
+            since = now - t.changed_at if t.changed_at else 0.0
+            if since > 0.05:
+                t.fix_gap = (since if not math.isfinite(t.fix_gap)
+                             else 0.7 * t.fix_gap + 0.3 * since)
+            t.changed_at = now
+            t.gx = t.dx if math.isfinite(t.dx) else float(x)
+            t.gy = t.dy if math.isfinite(t.dy) else float(y)
+            t.gz = t.dz if math.isfinite(t.dz) else float(z)
+            t.glide_at = now
+            t.glide_for = (min(max(t.fix_gap, MIN_GLIDE_S), MAX_GLIDE_S)
+                           if math.isfinite(t.fix_gap) else 0.0)
         t.updated_at = now
         t.x, t.y, t.z, t.heading = float(x), float(y), float(z), float(heading)
         t.stale = False
@@ -285,7 +313,7 @@ class TargetLayer:
         """Step every glide forward. True if anything actually moved.
 
         Called at frame rate. The fraction is clamped to 1, so a marker that
-        has arrived sits at its last reported fix and waits - this interpolates
+        has arrived sits at its last reported fix and waits: this interpolates
         between two real positions and never extrapolates past the newest one.
         """
         now = time.monotonic() if now is None else now
@@ -293,18 +321,30 @@ class TargetLayer:
         for t in self.targets.values():
             if not t.fix:
                 continue
+            if not math.isfinite(t.dx) or not math.isfinite(t.gx):
+                t.dx, t.dy, t.dz = t.x, t.y, t.z
+                t.gx, t.gy, t.gz = t.x, t.y, t.z
+                moved = True
+                continue
+            if max(abs(t.x - t.dx), abs(t.y - t.dy),
+                   abs(t.z - t.dz)) > SNAP_M:
+                # A jump that size is a feed restarting or a vehicle being
+                # relocated, not something that travelled. Sliding across the
+                # map would be a lie.
+                t.dx, t.dy, t.dz = t.x, t.y, t.z
+                t.gx, t.gy, t.gz = t.x, t.y, t.z
+                moved = True
+                continue
             if t.glide_for > 0.0:
                 f = (now - t.glide_at) / t.glide_for
                 f = 0.0 if f < 0.0 else (1.0 if f > 1.0 else f)
             else:
                 f = 1.0
-            if not math.isfinite(t.gx):
-                t.gx, t.gy, t.gz = t.x, t.y, t.z
             nx = t.gx + (t.x - t.gx) * f
             ny = t.gy + (t.y - t.gy) * f
             nz = t.gz + (t.z - t.gz) * f
-            if (not math.isfinite(t.dx) or abs(nx - t.dx) > 1e-6
-                    or abs(ny - t.dy) > 1e-6 or abs(nz - t.dz) > 1e-6):
+            if (abs(nx - t.dx) > 1e-6 or abs(ny - t.dy) > 1e-6
+                    or abs(nz - t.dz) > 1e-6):
                 t.dx, t.dy, t.dz = nx, ny, nz
                 moved = True
         if moved:
