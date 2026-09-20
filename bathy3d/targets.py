@@ -482,9 +482,14 @@ class TargetLayer:
                     name=f"tgt:{t.name}", render=False, pickable=False)
             marker = bag["marker"]
             marker.SetPosition(lx, ly, lz)
+            # Same 2% dead band the camera path uses. Without it the cylinder
+            # is resized on every fix, so any camera drift between fixes makes
+            # it pulse once a second instead of holding still.
             want = self._body_scale(t)
-            self._tms_scales[t.name] = want
-            marker.SetScale(want, want, want)
+            had = self._tms_scales.get(t.name, 0.0)
+            if not had or abs(want - had) / max(had, 1e-9) >= 0.02:
+                self._tms_scales[t.name] = want
+                marker.SetScale(want, want, want)
             marker.GetProperty().SetOpacity(0.45 if t.stale else 1.0)
         else:
             # Screen-constant dots. A world-space glyph big enough to see across
