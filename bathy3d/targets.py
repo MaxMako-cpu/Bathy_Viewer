@@ -67,32 +67,6 @@ TRAIL_DRAW_MAX = 4000
 #: Hard ceiling on retained points, in case a feed runs far faster than 1 Hz.
 MAX_TRAIL_POINTS = 400_000
 
-#: Bounds on how long a marker takes to cross from one fix to the next.
-#:
-#: The glide is linear over the interval the position has actually been
-#: changing at, which for a vehicle holding course is constant velocity - the
-#: smoothest thing that is also true.
-#:
-#: The interval must be measured between *changes*, not between calls. The two
-#: feeds are interleaved and the scene is rebuilt whenever either fires, so
-#: timing the calls measured 0.5 s while positions really changed once a
-#: second: the marker crossed the whole step in half a second and then froze
-#: for half a second, twice a second. Measured, per-frame movement swung from
-#: 0 to 51 mm about a 25 mm mean - a stutter worse than the plain 1 Hz step it
-#: was meant to cure. Smoothing exponentially instead removed the freeze but
-#: surged after each fix and eased off before the next, which pumps just as
-#: visibly.
-MIN_GLIDE_S = 0.15
-MAX_GLIDE_S = 2.5
-
-#: A change smaller than this is the sender repeating itself, not movement.
-STILL_M = 1e-4
-
-#: Further than this and the marker is put straight there rather than sliding.
-#: A jump that big is a feed restarting or a vehicle being relocated, not
-#: something that travelled, and sliding across the map would be a lie.
-SNAP_M = 250.0
-
 
 #: Depth bias for things drawn over the terrain. Larger means nearer the
 #: viewer, so these are layers, not a single "on top": a slope box is a sheet
@@ -143,24 +117,6 @@ class Target:
     updated_at: float = 0.0       # monotonic clock of the last fix
     stem: bool = True             # draw a drop line down to the seabed
 
-    #: Where it is *drawn*, as against x/y/z which are what the feed reported.
-    #: Everything else - the table, the calibration, a slide case - reads the
-    #: reported values, so only the picture is interpolated.
-    dx: float = float("nan")
-    dy: float = float("nan")
-    dz: float = float("nan")
-    #: The glide under way: where it started, when, and for how long.
-    gx: float = float("nan")
-    gy: float = float("nan")
-    gz: float = float("nan")
-    glide_at: float = 0.0
-    glide_for: float = 0.0
-    #: When the reported position last actually changed, and how often it has
-    #: been changing - which is the rate the sender is really running at.
-    changed_at: float = 0.0
-    fix_gap: float = float("nan")
-
-
     @property
     def fix(self) -> bool:
         return math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.z)
@@ -187,13 +143,7 @@ class TargetLayer:
         self._scale = 1.0  # metres per glyph unit, from the raster extent
         self._ve = 1.0
         self._mpp = 1.0
-        #: Per-body swell factor. Per body, not one for the scene: with a
-        #: perspective camera two bodies at different distances need different
-        #: scales to end up the same size on screen.
-        self._tms_scales: dict[str, float] = {}
-        self._cam = None            # camera position, scene coordinates
-        self._k = 0.0               # metres per pixel per metre of distance
-        self._parallel_mpp = None   # set instead of _k under parallel projection
+        self._tms_scale = 1.0
         self.visible = True
         self.tms_visible = True
         #: Body -> the ROV whose chain it belongs to, so switching one ROV off
@@ -203,9 +153,6 @@ class TargetLayer:
         #: Chains switched off. Anything not in a chain - the vessel - is
         #: unaffected, since it belongs to both ROVs and to neither.
         self.hidden_chains: set[str] = set()
-        #: Link pairs seen so far, so advance() can redraw them mid-glide.
-        self._links: dict = {}
-        self._advanced_at = 0.0
         self.tethers_visible = True
 
     # ------------------------------------------------------------------ setup
@@ -267,8 +214,8 @@ class TargetLayer:
             p = self.surface.probe(x, y)
             z = p.z if p else float("nan")
         now = time.monotonic()
-        gap = now - t.updated_at if t.updated_at else 0.0
         if t.fix and t.updated_at:
+            gap = now - t.updated_at
             step = math.hypot(float(x) - t.x, float(y) - t.y)
             if gap > 0.05:
                 # Lightly smoothed: the sender repeats the previous position
@@ -278,25 +225,6 @@ class TargetLayer:
                     t.speed = 0.6 * t.speed + 0.4 * inst
                 else:
                     t.speed = inst
-        # Only a real change restarts the glide. The sender repeats a position
-        # when it has no new one, and the depth feed redraws every body without
-        # moving any of them; treating those as fixes is what made the marker
-        # stutter.
-        moved_far = (not t.fix
-                     or math.hypot(float(x) - t.x, float(y) - t.y) > STILL_M
-                     or abs(float(z) - t.z) > STILL_M)
-        if moved_far:
-            since = now - t.changed_at if t.changed_at else 0.0
-            if since > 0.05:
-                t.fix_gap = (since if not math.isfinite(t.fix_gap)
-                             else 0.7 * t.fix_gap + 0.3 * since)
-            t.changed_at = now
-            t.gx = t.dx if math.isfinite(t.dx) else float(x)
-            t.gy = t.dy if math.isfinite(t.dy) else float(y)
-            t.gz = t.dz if math.isfinite(t.dz) else float(z)
-            t.glide_at = now
-            t.glide_for = (min(max(t.fix_gap, MIN_GLIDE_S), MAX_GLIDE_S)
-                           if math.isfinite(t.fix_gap) else 0.0)
         t.updated_at = now
         t.x, t.y, t.z, t.heading = float(x), float(y), float(z), float(heading)
         t.stale = False
@@ -308,52 +236,6 @@ class TargetLayer:
             t.trail.clear()
         self._place(t)
         return t
-
-    def advance(self, now: float | None = None) -> bool:
-        """Step every glide forward. True if anything actually moved.
-
-        Called at frame rate. The fraction is clamped to 1, so a marker that
-        has arrived sits at its last reported fix and waits: this interpolates
-        between two real positions and never extrapolates past the newest one.
-        """
-        now = time.monotonic() if now is None else now
-        moved = False
-        for t in self.targets.values():
-            if not t.fix:
-                continue
-            if not math.isfinite(t.dx) or not math.isfinite(t.gx):
-                t.dx, t.dy, t.dz = t.x, t.y, t.z
-                t.gx, t.gy, t.gz = t.x, t.y, t.z
-                moved = True
-                continue
-            if max(abs(t.x - t.dx), abs(t.y - t.dy),
-                   abs(t.z - t.dz)) > SNAP_M:
-                # A jump that size is a feed restarting or a vehicle being
-                # relocated, not something that travelled. Sliding across the
-                # map would be a lie.
-                t.dx, t.dy, t.dz = t.x, t.y, t.z
-                t.gx, t.gy, t.gz = t.x, t.y, t.z
-                moved = True
-                continue
-            if t.glide_for > 0.0:
-                f = (now - t.glide_at) / t.glide_for
-                f = 0.0 if f < 0.0 else (1.0 if f > 1.0 else f)
-            else:
-                f = 1.0
-            nx = t.gx + (t.x - t.gx) * f
-            ny = t.gy + (t.y - t.gy) * f
-            nz = t.gz + (t.z - t.gz) * f
-            if (abs(nx - t.dx) > 1e-6 or abs(ny - t.dy) > 1e-6
-                    or abs(nz - t.dz) > 1e-6):
-                t.dx, t.dy, t.dz = nx, ny, nz
-                moved = True
-        if moved:
-            for t in self.targets.values():
-                if t.fix:
-                    self._place(t, trail=False)
-            if self._links:
-                self.draw_links(self._links)
-        return moved
 
     def _trim(self, t: Target, now: float) -> None:
         cutoff = now - self.trail_seconds
@@ -442,8 +324,6 @@ class TargetLayer:
                     pass
         self._actors.clear()
         self.targets.clear()
-        self._tms_scales.clear()
-        self._links.clear()
 
     def set_visible(self, on: bool) -> None:
         self.visible = on
@@ -456,61 +336,24 @@ class TargetLayer:
 
     # ---------------------------------------------------------------- drawing
 
-    def set_view_scale(self, cam_pos, k: float,
-                       parallel_mpp: float | None = None) -> None:
-        """Tell the layer where the camera is, so bodies can be sized properly.
+    def set_metres_per_pixel(self, mpp: float) -> None:
+        """Ground scale, so world-space bodies stay visible.
 
-        ``k`` converts a distance into metres per screen pixel: with a
-        perspective camera a thing twice as far away is half the size, so the
-        scale depends on the distance to *that body*, not to anything else.
-
-        This used to take a single figure for the whole scene, measured at the
-        focal point, and apply it to every body. That is exact only for a body
-        sitting at the focal point. Measured: framed on the vehicles a TMS drew
-        at 20 px as intended, but with the focal point moved away across the
-        grid - which is all it takes to zoom in on something else - the same
-        body drew at 1,212 px and filled the screen. Zoom to targets appeared
-        to fix it because it puts the focal point back on the vehicles.
+        Called whenever the camera moves. The TMS keeps its true 3 m x 2 m
+        shape but is scaled up once it would otherwise fall below a few pixels,
+        which is the only way a body that size stays findable on this grid.
         """
-        self._cam = tuple(cam_pos) if cam_pos is not None else None
-        self._k = float(k)
-        self._parallel_mpp = parallel_mpp
-        if parallel_mpp:
-            self._mpp = parallel_mpp
-        elif self._cam is not None:
-            self._mpp = max(self._k * 1.0, 1e-9)
+        if not mpp > 0:
+            return
+        self._mpp = mpp
+        want = max(1.0, TMS_MIN_PX * mpp / TMS_DIAMETER_M)
+        if abs(want - self._tms_scale) / max(self._tms_scale, 1e-9) < 0.02:
+            return
+        self._tms_scale = want
         for name, bag in self._actors.items():
             t = self.targets.get(name)
-            if t is None or t.kind != "cylinder" or "marker" not in bag:
-                continue
-            want = self._body_scale(t)
-            had = self._tms_scales.get(name, 0.0)
-            if had and abs(want - had) / max(had, 1e-9) < 0.02:
-                continue
-            self._tms_scales[name] = want
-            bag["marker"].SetScale(want, want, want)
-
-    def _mpp_at(self, pos) -> float:
-        """Metres per screen pixel at one point in the scene."""
-        if self._parallel_mpp:
-            return self._parallel_mpp
-        if self._cam is None or not self._k:
-            return self._mpp
-        d = math.dist(self._cam, pos)
-        return max(self._k * d, 1e-9)
-
-    def _body_scale(self, t: Target) -> float:
-        """How much to swell one body so it keeps its minimum screen size.
-
-        The TMS keeps its true 3 m x 2 m shape but is scaled up once it would
-        otherwise fall below a few pixels, which is the only way a body that
-        size stays findable on this grid.
-        """
-        if self.surface is None or not t.fix:
-            return self._tms_scales.get(t.name, 1.0)
-        lx, ly = self.surface.local_from_crs(t.x, t.y)
-        mpp = self._mpp_at((lx, ly, t.z * self._ve))
-        return max(1.0, TMS_MIN_PX * mpp / TMS_DIAMETER_M)
+            if t is not None and t.kind == "cylinder" and "marker" in bag:
+                bag["marker"].SetScale(want, want, want)
 
     def _dashed(self, a, b):
         """A tether drawn as separate dashes - VTK line stipple is unreliable."""
@@ -518,11 +361,7 @@ class TargetLayer:
         span = float(np.linalg.norm(b - a))
         if span < 1e-6:
             return None
-        # Measured where the line actually is. Using a single scene-wide
-        # figure made the dashes on a near tether as coarse as the distance to
-        # whatever the camera happened to be looking at.
-        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0)
-        dash = max(span / 60.0, TETHER_DASH_PX * self._mpp_at(mid))
+        dash = max(span / 60.0, TETHER_DASH_PX * self._mpp)
         n = max(int(span / (dash * 2.0)), 1)
         pts, cells = [], []
         for i in range(n):
@@ -537,12 +376,9 @@ class TargetLayer:
         """A thin dotted line between each pair of bodies.
 
         Used for both the tethers (TMS down to its ROV) and the umbilicals
-        (vessel down to each TMS), so the whole chain reads as one line. The
-        pairs are remembered so a glide can carry the lines along with the
-        bodies they join, rather than leaving them behind for a second.
+        (vessel down to each TMS), so the whole chain reads as one line.
         """
-        self._links.update(pairs)
-        for lower, upper in self._links.items():
+        for lower, upper in pairs.items():
             name = f"link:{lower}"
             self.plotter.remove_actor(name, render=False)
             a, b = self.targets.get(lower), self.targets.get(upper)
@@ -553,8 +389,8 @@ class TargetLayer:
                     and self._chain_visible(lower)
                     and self._chain_visible(upper)):
                 continue
-            pa = (*self.surface.local_from_crs(a.dx, a.dy), a.dz * self._ve)
-            pb = (*self.surface.local_from_crs(b.dx, b.dy), b.dz * self._ve)
+            pa = (*self.surface.local_from_crs(a.x, a.y), a.z * self._ve)
+            pb = (*self.surface.local_from_crs(b.x, b.y), b.z * self._ve)
             mesh = self._dashed(pa, pb)
             if mesh is None:
                 continue
@@ -570,23 +406,17 @@ class TargetLayer:
             return pv.Cone(direction=(0, 1, 0), height=3.2 * s, radius=1.1 * s, resolution=4)
         return pv.Sphere(radius=0.9 * s, theta_resolution=18, phi_resolution=18)
 
-    def _place(self, t: Target, trail: bool = True) -> None:
-        """Move every actor belonging to one target to its *drawn* position.
+    def _place(self, t: Target) -> None:
+        """Move every actor belonging to one target.
 
-        Everything here rides on an actor transform or an in-place point
-        update, so it is cheap enough to run at frame rate while a marker
-        glides between fixes. ``trail=False`` skips the one thing that is not:
-        rebuilding a polyline of up to 4 000 vertices. The trail only changes
-        when a real fix lands anyway, and its newest segment is under a metre
-        long, so the marker gliding a fraction behind its own tail is not
-        something anyone can see.
+        The marker rides on the actor transform (cheap, called at fix rate).
+        Label, drop line and trail change shape, so they are re-added under the
+        same ``name`` - pyvista swaps the actor rather than stacking a new one.
         """
         if self.surface is None or not t.fix:
             return
-        if not math.isfinite(t.dx):
-            t.dx, t.dy, t.dz = t.x, t.y, t.z
-        lx, ly = self.surface.local_from_crs(t.dx, t.dy)
-        lz = t.dz * self._ve
+        lx, ly = self.surface.local_from_crs(t.x, t.y)
+        lz = t.z * self._ve
         bag = self._actors.setdefault(t.name, {})
 
         if t.kind == "cylinder":
@@ -605,79 +435,41 @@ class TargetLayer:
                     name=f"tgt:{t.name}", render=False, pickable=False)
             marker = bag["marker"]
             marker.SetPosition(lx, ly, lz)
-            # Same 2% dead band the camera path uses. Without it the cylinder
-            # is resized on every fix, so any camera drift between fixes makes
-            # it pulse once a second instead of holding still.
-            want = self._body_scale(t)
-            had = self._tms_scales.get(t.name, 0.0)
-            if not had or abs(want - had) / max(had, 1e-9) >= 0.02:
-                self._tms_scales[t.name] = want
-                marker.SetScale(want, want, want)
+            marker.SetScale(self._tms_scale, self._tms_scale, self._tms_scale)
             marker.GetProperty().SetOpacity(0.45 if t.stale else 1.0)
         else:
             # Screen-constant dots. A world-space glyph big enough to see across
             # a 131 km grid would be wider than the vehicles are apart.
-            #
-            # Built once at the origin and moved by its transform, not re-added
-            # each time: re-creating the actor every frame of a glide costs far
-            # more than moving it, and made the marker flicker.
-            if "marker" not in bag:
-                bag["marker"] = self.plotter.add_points(
-                    np.zeros((1, 3), dtype=float), color=t.color,
-                    point_size=BASE_POINT_PX * t.size,
-                    render_points_as_spheres=True,
-                    name=f"tgt:{t.name}", render=False, pickable=False,
-                )
-            bag["marker"].SetPosition(lx, ly, lz)
-            bag["marker"].GetProperty().SetOpacity(0.45 if t.stale else 1.0)
+            bag["marker"] = self.plotter.add_points(
+                np.array([[lx, ly, lz]], dtype=float), color=t.color,
+                point_size=BASE_POINT_PX * t.size, render_points_as_spheres=True,
+                name=f"tgt:{t.name}", render=False, pickable=False,
+                opacity=0.45 if t.stale else 1.0,
+            )
         bag["marker"].SetVisibility(self.shows(t))
         draw_on_top(bag["marker"])
 
-        # The label is a text actor, which is expensive to rebuild, so its one
-        # point is moved in place instead.
-        lpd = bag.get("label_pd")
-        if lpd is None or bag.get("label_text") != t.shown:
-            lpd = pv.PolyData(np.array([[lx, ly, lz]], dtype=float))
-            lpd["labels"] = [t.shown]
-            bag["label_pd"] = lpd
-            bag["label_text"] = t.shown
-            bag["label"] = self.plotter.add_point_labels(
-                lpd, "labels", name=f"lbl:{t.name}",
-                font_size=11, text_color=t.color, shape=None,
-                show_points=False, always_visible=True, render=False,
-            )
-        else:
-            lpd.points[0] = (lx, ly, lz)
-            lpd.Modified()
+        bag["label"] = self.plotter.add_point_labels(
+            np.array([[lx, ly, lz]], dtype=float), [t.shown], name=f"lbl:{t.name}",
+            font_size=11, text_color=t.color, shape=None, show_points=False,
+            always_visible=True, render=False,
+        )
         bag["label"].SetVisibility(self.shows(t))
 
-        # Drop line to the seabed, so depth reads against the terrain. Probed
-        # under where the marker is drawn, so the foot of the line stays under
-        # the body while it glides.
-        p = self.surface.probe(t.dx, t.dy)
-        if t.stem and p is not None and abs(t.dz - p.z) > 1e-6:
-            foot, head = (lx, ly, p.z * self._ve), (lx, ly, lz)
-            spd = bag.get("stem_pd")
-            if spd is None:
-                spd = pv.Line(foot, head)
-                bag["stem_pd"] = spd
-                bag["stem"] = self.plotter.add_mesh(
-                    spd, color=t.color, line_width=1, opacity=0.5,
-                    name=f"stem:{t.name}", render=False, pickable=False,
-                )
-                draw_on_top(bag["stem"])
-            else:
-                spd.points[0] = foot
-                spd.points[1] = head
-                spd.Modified()
+        # Drop line to the seabed, so depth reads against the terrain.
+        p = self.surface.probe(t.x, t.y)
+        if t.stem and p is not None and abs(t.z - p.z) > 1e-6:
+            bag["stem"] = self.plotter.add_mesh(
+                pv.Line((lx, ly, p.z * self._ve), (lx, ly, lz)), color=t.color,
+                line_width=1, opacity=0.5, name=f"stem:{t.name}",
+                render=False, pickable=False,
+            )
             bag["stem"].SetVisibility(self.shows(t))
+            draw_on_top(bag["stem"])
         elif "stem" in bag:
             # Back on the seabed - drop the line rather than leaving it hanging.
             self.plotter.remove_actor(bag.pop("stem"), render=False)
-            bag.pop("stem_pd", None)
 
-        if not trail:
-            return
         if len(t.trail) > 1:
             pts = np.asarray(t.trail, dtype=float)[:, :3].copy()
             if len(pts) > TRAIL_DRAW_MAX:

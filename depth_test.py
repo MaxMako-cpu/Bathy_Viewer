@@ -189,62 +189,6 @@ check("showing TMS brings them back",
       actors.get("tgt:TMS1").GetVisibility()
       and any(a.startswith("link") for a in win.view.plotter.renderer.actors))
 
-print("\nthe TMS keeps its screen size wherever the camera looks:")
-# It is scaled up so a 3 m body stays findable on a 130 km grid. That scale
-# used to come from the ground scale at the FOCAL POINT and be applied to every
-# body, which is exact only for a body sitting at the focal point. Framed on
-# the vehicles a TMS drew at its intended 20 px; with the focal point moved
-# across the grid - all it takes to zoom in on something else - the same body
-# drew at 1,212 px and filled the screen. Zoom to targets appeared to cure it
-# because it puts the focal point back on the vehicles.
-import numpy as _np                            # noqa: E402
-
-win.view.zoom_to_targets()
-pump(400)
-_cam = win.view.plotter.camera
-_t = tg["TMS1"]
-_lx, _ly = s.local_from_crs(_t.x, _t.y)
-_body = _np.array([_lx, _ly, _t.z * win.view.ve])
-
-
-def tms_pixels():
-    """How wide the TMS actually draws, in screen pixels."""
-    cp = _np.asarray(_cam.position, float)
-    h = max(win.view.plotter.window_size[1], 1)
-    k = 2.0 * math.tan(math.radians(_cam.view_angle) / 2.0) / h
-    d = float(_np.linalg.norm(cp - _body))
-    return TMS_DIAMETER_M * win.view.targets._tms_scales.get("TMS1", 1.0) / (k * d)
-
-
-framed = tms_pixels()
-check("framed on the vehicles it is the intended size",
-      abs(framed - 20.0) < 1.0, f"{framed:.1f} px")
-
-for dx, dy, tag in ((40_000, 40_000, "56 km"), (120_000, 90_000, "150 km")):
-    _cam.focal_point = (_lx + dx, _ly + dy, 0.0)
-    win.view.plotter.render()
-    pump(250)
-    got = tms_pixels()
-    check(f"and the same with the focus {tag} away", abs(got - framed) < 2.0,
-          f"{got:.1f} px")
-
-win.view.zoom_to_targets()
-pump(300)
-for _ in range(8):
-    win.view._style_wheel_out(None, None)
-pump(300)
-out = tms_pixels()
-check("zoomed right out it is still the same size", abs(out - framed) < 2.0,
-      f"{out:.1f} px")
-for _ in range(14):
-    win.view._style_wheel_in(None, None)
-pump(300)
-back = tms_pixels()
-check("and zooming back in does not leave it swollen",
-      abs(back - framed) < 2.0, f"{back:.1f} px")
-win.view.zoom_to_targets()
-pump(300)
-
 print("\nshowing one ROV chain at a time:")
 check("there is a button per ROV", set(win.chain_b) == set(DEPTH_ORDER[:2]),
       str(sorted(win.chain_b)))
@@ -325,28 +269,18 @@ check("the feed refills the layer after a reload", len(tg) == len(ORDER),
 
 print("\nwhen the depth feed stops:")
 row = {win.tgt_table.item(r, 0).text(): r for r in range(win.tgt_table.rowCount())}
-held = tg["ROV1"].z
+before = tg["ROV1"].z
 win._depths["ROV1"] = (win._depths["ROV1"][0], time.monotonic() - 99)
 sock.sendto(rec(BASE).encode(), ("127.0.0.1", PPORT))
 for _ in range(40):
     pump(80)
-    if tg["ROV1"].stale:
+    if abs(tg["ROV1"].z - before) > 1e-6:
         break
 p = s.probe(tg["ROV1"].x, tg["ROV1"].y)
-# It used to be dropped onto the seabed, which on this ground is a 40 m fall
-# the vehicle never made - 240 units of screen at x6 exaggeration, and it
-# snapped straight back when the feed returned. Holding the last reading
-# asserts only what was reported; the dimming and the Age column say it is old.
-check("a stale depth is held, not dropped to the seabed",
-      abs(tg["ROV1"].z - held) < 1e-6,
-      f"z {tg['ROV1'].z:,.1f}, seabed would have been {p.z:,.1f}")
-check("so it does not fall the height of its altitude",
-      abs(tg["ROV1"].z - p.z) > 1.0,
-      f"{abs(tg['ROV1'].z - p.z):,.1f} m above the bottom")
+check("a stale depth falls back to the seabed",
+      abs(tg["ROV1"].z - p.z) < 1e-6,
+      f"z {tg['ROV1'].z:,.1f} vs seabed {p.z:,.1f}")
 check("and the marker is dimmed", tg["ROV1"].stale)
-check("its depth still reads in the table",
-      win.tgt_table.item(ORDER.index("ROV1"), 3).text() not in ("--", ""),
-      win.tgt_table.item(ORDER.index("ROV1"), 3).text())
 
 sock.close()
 win.listen_b.setChecked(False)

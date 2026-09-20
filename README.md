@@ -352,43 +352,9 @@ placed 2700 km away takes the camera with it, so it reads `off grid` instead.
 
 The two feeds are independent and carry no timestamps, so there is no honest
 way to time-align them. Each vehicle keeps its latest position and its latest
-depth, and the scene is rebuilt from whichever has just changed.
-
-A depth more than 15 s old is treated as stale: the marker **dims** and the Age
-column climbs, but the vehicle **stays where the feed last put it**. It used to
-be dropped onto the seabed, which on this ground is a 40 m fall it never made —
-240 units of screen at the default exaggeration — and it snapped back the
-moment the feed returned. Holding the last reading asserts only what was
-actually reported. A vehicle that has *never* sent a depth is still rested on
-the seabed, because there is nothing to hold.
-
-**Markers glide between fixes.** The feed is a 1 Hz step function — measured on
-a real capture: 1.000 s between records, 0.635 m of travel in each — so a
-marker drawn only where the last fix put it sits still for a second and then
-teleports. Each fix instead starts a glide from wherever the marker is drawn to
-where the fix says it is, over the interval the position has actually been
-*changing* at — which for a vehicle holding course is constant velocity, the
-smoothest thing that is also true.
-
-**Measured between changes, not between calls.** The two feeds are interleaved
-and the scene is rebuilt whenever either fires, and the sender repeats a
-position when it has no new one — so timing the calls measured 0.5 s while
-positions really changed once a second. The marker crossed the whole step in
-half a second and froze for half a second, twice a second: per-frame movement
-swung from 0 to 51 mm about a 25 mm mean, a stutter worse than the plain 1 Hz
-step it was meant to cure. Smoothing exponentially instead removed the freeze
-but surged after each fix and eased before the next, which pumps just as
-visibly. Restarting the glide only on real movement gives 0.14.
-
-It interpolates **between two reported fixes and never past the newest one**:
-once a marker arrives it waits. Nothing is invented beyond "it was here, then
-it was there". A fix landing mid-glide carries on from what is on screen rather
-than snapping back, and after a long dropout the glide is capped at 2.5 s so a
-returning vehicle arrives promptly instead of crawling.
-
-The reported position is kept separate from the drawn one throughout: the
-table, the calibration and a node slide case all read what the feed said, never
-the interpolation.
+depth, and the scene is rebuilt from whichever has just changed. A depth more
+than 15 s old is treated as gone: the vehicle rests on the seabed and its
+marker dims, rather than hanging at a frozen depth while looking live.
 
 **The Alt column is the one to watch.** Altitude is seabed depth minus vehicle
 depth, and it cannot be negative — a vehicle reading as *below* the bottom
@@ -398,14 +364,7 @@ terrain.
 
 Cylinders are drawn at their true 3 m × 2 m size but never allowed below 20
 screen pixels; a body that size is otherwise invisible until you have closed
-right in. That swelling is measured **at each body's own distance from the
-camera**, not once for the whole scene: under perspective a thing twice as far
-away is half the size, and the vehicles are rarely at the focal point. Sizing
-every body by the ground scale at the focal point drew a TMS at its intended
-20 px when the camera looked straight at it and at 1,212 px when it looked
-elsewhere — which is all it takes to zoom in on something else. *Zoom to
-targets* appeared to cure it only because it puts the focal point back on the
-vehicles. They are also given plenty of ambient light, since a small object lit
+right in. They are also given plenty of ambient light, since a small object lit
 only by the survey sun goes black whenever the sun is behind it.
 
 ### Scale is the thing to understand

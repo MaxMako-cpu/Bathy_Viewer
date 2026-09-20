@@ -11,7 +11,6 @@ datagram cut in half. Part two drives the real listener through a real socket.
 
 from __future__ import annotations
 
-import math
 import os
 import socket
 import sys
@@ -183,70 +182,6 @@ def part2_live(grid):
           all(len(t.trail) >= 2 for t in win.view.targets.targets.values()),
           str({k: len(v.trail) for k, v in win.view.targets.targets.items()}))
     check("framed the vehicles on the first fix", win._framed_feed is True)
-
-    print("\ngliding between fixes:")
-    # The feed is a 1 Hz step function - measured on a real capture, 1.000 s
-    # between records and 0.635 m of travel in each - so a marker drawn only
-    # where the last fix put it sits still for a second and then teleports.
-    t = win.view.targets.targets["ROV1"]
-    check("the reported position is kept apart from the drawn one",
-          math.isfinite(t.dx) and math.isfinite(t.x),
-          f"reported {t.x:,.2f}E, drawn {t.dx:,.2f}E")
-
-    from bathy3d.targets import MAX_GLIDE_S, MIN_GLIDE_S
-    moved = [last[2] + 8.0, last[3] - 6.0]        # shift ROV1 by 10 m
-    shifted = list(last)
-    shifted[2], shifted[3] = moved
-    win.view.targets.update("ROV1", moved[0], moved[1], t.z)
-    t = win.view.targets.targets["ROV1"]
-    check("a new fix starts a glide rather than a jump", t.glide_for > 0.0,
-          f"{t.glide_for:.2f} s")
-    check("the glide is no shorter than the floor",
-          t.glide_for >= MIN_GLIDE_S and t.glide_for <= MAX_GLIDE_S)
-
-    win.view.targets.advance(t.glide_at)
-    start = t.dx
-    win.view.targets.advance(t.glide_at + t.glide_for * 0.5)
-    half = t.dx
-    win.view.targets.advance(t.glide_at + t.glide_for)
-    done = t.dx
-    check("it is drawn part way at half time",
-          min(start, done) < half < max(start, done),
-          f"{start:,.2f} -> {half:,.2f} -> {done:,.2f}")
-    check("and lands exactly on the reported fix", abs(done - t.x) < 1e-6,
-          f"{done:,.3f} vs {t.x:,.3f}")
-
-    # The one thing it must never do: invent a position beyond the newest fix.
-    win.view.targets.advance(t.glide_at + t.glide_for * 5.0)
-    check("it never runs past the newest fix", abs(t.dx - t.x) < 1e-6,
-          f"{t.dx:,.3f} vs {t.x:,.3f}")
-    win.view.targets.advance(t.glide_at + t.glide_for * 9.0)
-    parked = (t.dx, t.dy, t.dz)
-    win.view.targets.advance(t.glide_at + t.glide_for * 20.0)
-    check("and waits there until the next one arrives",
-          (t.dx, t.dy, t.dz) == parked,
-          f"{t.dx:,.3f} vs {parked[0]:,.3f}")
-
-    # The property the first attempt at this broke. The depth feed redraws
-    # every body without moving any of them, and the sender repeats a position
-    # when it has no new one. Timing the glide from those made it measure 0.5 s
-    # while positions really changed once a second, so the marker crossed the
-    # step in half the time and then froze - a stutter worse than the plain
-    # 1 Hz step it was meant to cure.
-    was_at, was_for = t.glide_at, t.glide_for
-    win.view.targets.update("ROV1", t.x, t.y, t.z)        # same position again
-    check("a repeated position does not restart the glide",
-          t.glide_at == was_at and t.glide_for == was_for,
-          f"{t.glide_at:.3f}/{t.glide_for:.3f} vs {was_at:.3f}/{was_for:.3f}")
-    win.view.targets.update("ROV1", t.x, t.y, t.z - 3.0)  # a real depth change
-    check("but a real change does", t.glide_at != was_at)
-
-    # A jump too large to have been travelled is placed, not slid.
-    from bathy3d.targets import SNAP_M
-    win.view.targets.update("ROV1", t.x + SNAP_M * 3, t.y, t.z)
-    win.view.targets.advance()
-    check("an impossible jump is placed straight away, not slid across",
-          abs(t.dx - t.x) < 1e-6, f"{t.dx:,.1f} vs {t.x:,.1f}")
 
     print("\nthe feed's settings live in the menu bar:")
     menus = [a.text() for a in win.menuBar().actions()]
