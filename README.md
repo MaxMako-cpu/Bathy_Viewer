@@ -364,7 +364,14 @@ terrain.
 
 Cylinders are drawn at their true 3 m × 2 m size but never allowed below 20
 screen pixels; a body that size is otherwise invisible until you have closed
-right in. They are also given plenty of ambient light, since a small object lit
+right in. That swelling is measured **at each body's own distance from the
+camera**, not once for the whole scene: under perspective a thing twice as far
+away is half the size, and the vehicles are rarely at the focal point. Sizing
+every body by the ground scale at the focal point drew a TMS at its intended
+20 px when the camera looked straight at it and at 1,212 px when it looked
+elsewhere — which is all it takes to zoom in on something else. *Zoom to
+targets* appeared to cure it only because it puts the focal point back on the
+vehicles. They are also given plenty of ambient light, since a small object lit
 only by the survey sun goes black whenever the sun is behind it.
 
 ### Scale is the thing to understand

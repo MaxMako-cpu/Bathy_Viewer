@@ -143,7 +143,13 @@ class TargetLayer:
         self._scale = 1.0  # metres per glyph unit, from the raster extent
         self._ve = 1.0
         self._mpp = 1.0
-        self._tms_scale = 1.0
+        #: Per-body swell factor. Per body, not one for the scene: with a
+        #: perspective camera two bodies at different distances need different
+        #: scales to end up the same size on screen.
+        self._tms_scales: dict[str, float] = {}
+        self._cam = None            # camera position, scene coordinates
+        self._k = 0.0               # metres per pixel per metre of distance
+        self._parallel_mpp = None   # set instead of _k under parallel projection
         self.visible = True
         self.tms_visible = True
         #: Body -> the ROV whose chain it belongs to, so switching one ROV off
@@ -336,24 +342,61 @@ class TargetLayer:
 
     # ---------------------------------------------------------------- drawing
 
-    def set_metres_per_pixel(self, mpp: float) -> None:
-        """Ground scale, so world-space bodies stay visible.
+    def set_view_scale(self, cam_pos, k: float,
+                       parallel_mpp: float | None = None) -> None:
+        """Tell the layer where the camera is, so bodies can be sized properly.
 
-        Called whenever the camera moves. The TMS keeps its true 3 m x 2 m
-        shape but is scaled up once it would otherwise fall below a few pixels,
-        which is the only way a body that size stays findable on this grid.
+        ``k`` converts a distance into metres per screen pixel: with a
+        perspective camera a thing twice as far away is half the size, so the
+        scale depends on the distance to *that body*, not to anything else.
+
+        This used to take a single figure for the whole scene, measured at the
+        focal point, and apply it to every body. That is exact only for a body
+        sitting at the focal point. Measured: framed on the vehicles a TMS drew
+        at 20 px as intended, but with the focal point moved away across the
+        grid - which is all it takes to zoom in on something else - the same
+        body drew at 1,212 px and filled the screen. Zoom to targets appeared
+        to fix it because it puts the focal point back on the vehicles.
         """
-        if not mpp > 0:
-            return
-        self._mpp = mpp
-        want = max(1.0, TMS_MIN_PX * mpp / TMS_DIAMETER_M)
-        if abs(want - self._tms_scale) / max(self._tms_scale, 1e-9) < 0.02:
-            return
-        self._tms_scale = want
+        self._cam = tuple(cam_pos) if cam_pos is not None else None
+        self._k = float(k)
+        self._parallel_mpp = parallel_mpp
+        if parallel_mpp:
+            self._mpp = parallel_mpp
+        elif self._cam is not None:
+            self._mpp = max(self._k * 1.0, 1e-9)
         for name, bag in self._actors.items():
             t = self.targets.get(name)
-            if t is not None and t.kind == "cylinder" and "marker" in bag:
-                bag["marker"].SetScale(want, want, want)
+            if t is None or t.kind != "cylinder" or "marker" not in bag:
+                continue
+            want = self._body_scale(t)
+            had = self._tms_scales.get(name, 0.0)
+            if had and abs(want - had) / max(had, 1e-9) < 0.02:
+                continue
+            self._tms_scales[name] = want
+            bag["marker"].SetScale(want, want, want)
+
+    def _mpp_at(self, pos) -> float:
+        """Metres per screen pixel at one point in the scene."""
+        if self._parallel_mpp:
+            return self._parallel_mpp
+        if self._cam is None or not self._k:
+            return self._mpp
+        d = math.dist(self._cam, pos)
+        return max(self._k * d, 1e-9)
+
+    def _body_scale(self, t: Target) -> float:
+        """How much to swell one body so it keeps its minimum screen size.
+
+        The TMS keeps its true 3 m x 2 m shape but is scaled up once it would
+        otherwise fall below a few pixels, which is the only way a body that
+        size stays findable on this grid.
+        """
+        if self.surface is None or not t.fix:
+            return self._tms_scales.get(t.name, 1.0)
+        lx, ly = self.surface.local_from_crs(t.x, t.y)
+        mpp = self._mpp_at((lx, ly, t.z * self._ve))
+        return max(1.0, TMS_MIN_PX * mpp / TMS_DIAMETER_M)
 
     def _dashed(self, a, b):
         """A tether drawn as separate dashes - VTK line stipple is unreliable."""
@@ -361,7 +404,11 @@ class TargetLayer:
         span = float(np.linalg.norm(b - a))
         if span < 1e-6:
             return None
-        dash = max(span / 60.0, TETHER_DASH_PX * self._mpp)
+        # Measured where the line actually is. Using a single scene-wide
+        # figure made the dashes on a near tether as coarse as the distance to
+        # whatever the camera happened to be looking at.
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0)
+        dash = max(span / 60.0, TETHER_DASH_PX * self._mpp_at(mid))
         n = max(int(span / (dash * 2.0)), 1)
         pts, cells = [], []
         for i in range(n):
@@ -435,7 +482,9 @@ class TargetLayer:
                     name=f"tgt:{t.name}", render=False, pickable=False)
             marker = bag["marker"]
             marker.SetPosition(lx, ly, lz)
-            marker.SetScale(self._tms_scale, self._tms_scale, self._tms_scale)
+            want = self._body_scale(t)
+            self._tms_scales[t.name] = want
+            marker.SetScale(want, want, want)
             marker.GetProperty().SetOpacity(0.45 if t.stale else 1.0)
         else:
             # Screen-constant dots. A world-space glyph big enough to see across

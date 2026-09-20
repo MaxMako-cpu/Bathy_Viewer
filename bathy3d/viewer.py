@@ -378,9 +378,22 @@ class TerrainView(QtWidgets.QWidget):
         return span if span > 1.0 else 1000.0
 
     def _sync_world_scale(self) -> None:
-        """Tell the target layer the ground scale, for the TMS bodies."""
+        """Tell the target layer where the camera is, for the TMS bodies.
+
+        The camera position rather than one ground-scale figure: under
+        perspective the scale a body needs depends on how far away *it* is,
+        and the vehicles are rarely at the focal point.
+        """
         try:
-            self.targets.set_metres_per_pixel(self.metres_per_pixel())
+            cam = self.plotter.camera
+            h = max(self.plotter.window_size[1], 1)
+            if bool(cam.parallel_projection):
+                # No perspective: one scale for the whole scene is correct.
+                self.targets.set_view_scale(
+                    None, 0.0, 2.0 * float(cam.parallel_scale) / h)
+            else:
+                k = 2.0 * math.tan(math.radians(cam.view_angle) / 2.0) / h
+                self.targets.set_view_scale(tuple(cam.position), k)
         except Exception:
             pass
 
