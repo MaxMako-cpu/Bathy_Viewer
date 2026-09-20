@@ -30,7 +30,7 @@ from PySide6 import QtCore, QtWidgets        # noqa: E402
 from bathy3d.feed import (DEPTH_FIELDS, DEPTH_ORDER, ORDER, POSITION_FIELDS,
                           TETHERS, UMBILICALS, parse_depths,
                           parse_records)  # noqa: E402
-from bathy3d.mainwindow import MainWindow    # noqa: E402
+from bathy3d.mainwindow import MainWindow, TRAILS   # noqa: E402
 from bathy3d.targets import TMS_DIAMETER_M, TMS_HEIGHT_M        # noqa: E402
 
 FAILED = []
@@ -188,6 +188,84 @@ pump(300)
 check("showing TMS brings them back",
       actors.get("tgt:TMS1").GetVisibility()
       and any(a.startswith("link") for a in win.view.plotter.renderer.actors))
+
+print("\nshowing one ROV chain at a time:")
+check("there is a button per ROV", set(win.chain_b) == set(DEPTH_ORDER[:2]),
+      str(sorted(win.chain_b)))
+check("both start selected",
+      all(b.isChecked() for b in win.chain_b.values()))
+
+win.chain_b["ROV2"].setChecked(False)
+pump(400)
+live = win.view.plotter.renderer.actors
+
+
+def vis(name):
+    a = live.get(name)
+    return a is not None and bool(a.GetVisibility())
+
+
+check("the deselected ROV goes", not vis("tgt:ROV2"))
+check("and its TMS goes with it", not vis("tgt:TMS2"),
+      "half a chain on screen leaves a tether to nothing")
+check("its trail goes too", not vis("trail:ROV2"))
+check("the selected ROV stays", vis("tgt:ROV1") and vis("tgt:TMS1"))
+check("the vessel stays - it belongs to both chains", vis("tgt:Vessel"))
+check("the hidden chain's tether and umbilical are gone",
+      "link:ROV2" not in live and "link:TMS2" not in live,
+      str([a for a in live if a.startswith("link")]))
+check("the shown chain keeps both of its links",
+      "link:ROV1" in live and "link:TMS1" in live)
+
+hidden_rows = [ORDER[r] for r in range(win.tgt_table.rowCount())
+               if win.tgt_table.isRowHidden(r)]
+check("the table disregards it too", sorted(hidden_rows) == ["ROV2", "TMS2"],
+      str(hidden_rows))
+check("and only the shown bodies are framed",
+      {t.name for t in win.view.targets.visible_targets()}
+      == {"Vessel", "ROV1", "TMS1"},
+      str(sorted(t.name for t in win.view.targets.visible_targets())))
+
+# A grid reload rebuilds the whole target layer, so everything configured on
+# it has to be put back - this used to lose trail retention, vehicle colours
+# and Show TMS as well, silently.
+win.view.set_surface(win.view.surface)
+win._configure_targets()
+pump(300)
+check("a grid reload keeps the selection",
+      win.view.targets.hidden_chains == {"ROV2"},
+      str(win.view.targets.hidden_chains))
+check("and keeps the vehicle colours",
+      win.view.targets.styles.get("ROV1", {}).get("color") is not None)
+check("and the trail retention",
+      win.view.targets.trail_seconds == TRAILS.get(win.trail_c.currentText()),
+      f"{win.view.targets.trail_seconds:.0f} s")
+
+win.chain_b["ROV2"].setChecked(True)
+pump(400)
+check("re-selecting brings the whole chain back",
+      not win.view.targets.hidden_chains
+      and not any(win.tgt_table.isRowHidden(r)
+                  for r in range(win.tgt_table.rowCount())))
+
+# Reloading emptied the target layer, so the feed has to refill it before the
+# checks below have anything to look at.
+for i in range(6):
+    moved = list(BASE)
+    for k in range(0, len(moved), 2):
+        moved[k] += i * 0.5
+        moved[k + 1] -= i * 0.8
+    sock.sendto(rec(moved).encode(), ("127.0.0.1", PPORT))
+    sock.sendto(rec([d + i * 0.4 for d in DEPTHS]).encode(), ("127.0.0.1", DPORT))
+    pump(160)
+for _ in range(40):
+    pump(80)
+    if len(win.view.targets.targets) == len(ORDER):
+        break
+tg = win.view.targets.targets
+actors = win.view.plotter.renderer.actors
+check("the feed refills the layer after a reload", len(tg) == len(ORDER),
+      str(sorted(tg)))
 
 print("\nwhen the depth feed stops:")
 row = {win.tgt_table.item(r, 0).text(): r for r in range(win.tgt_table.rowCount())}

@@ -211,6 +211,18 @@ def slide_db() -> str:
     return os.path.join(base, ORG, name)
 
 
+def hidden_chains() -> list:
+    """ROV chains the operator switched off in the Targets panel."""
+    v = settings().value("view/hidden_chains", [])
+    if isinstance(v, str):
+        v = [v]
+    return [str(x) for x in (v or []) if x]
+
+
+def set_hidden_chains(slots) -> None:
+    set_value("view/hidden_chains", [str(s) for s in slots])
+
+
 def dock_state():
     """Dock widths and positions, from QMainWindow.saveState.
 

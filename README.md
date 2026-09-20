@@ -379,6 +379,17 @@ changing your zoom.
 Markers, trails, tethers and drop lines are drawn over the terrain rather than
 depth-tested against it, so relief between a body and the camera cannot hide it.
 
+The **Targets** panel carries a button per ROV. Both selected shows everything;
+deselect one and that ROV, its TMS, their tether and umbilical, both trails and
+both table rows all go, leaving only the chain you are working. The whole chain
+goes together because half of one on screen leaves a tether running to a body
+that is not there.
+
+The vessel always stays — it belongs to both chains and to neither. *Zoom to
+targets* and *Follow targets* frame only what is shown, so the camera is not
+pulled towards a vehicle nobody can see. The selection is remembered between
+runs, and survives a grid reload.
+
 **Trail** sets how much track is kept, from *Off* up to *24 hours*. Trails are
 trimmed by age, not by point count. A 24-hour trail at 1 Hz is 86 400 points
 per vehicle; the full history is retained but the drawn line is subsampled to

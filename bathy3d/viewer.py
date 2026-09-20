@@ -294,8 +294,10 @@ class TerrainView(QtWidgets.QWidget):
         """
         if self.surface is None:
             return False
+        # Only what is on screen: framing a vehicle that has been switched
+        # off would pull the camera towards something nobody can see.
         pts = [(*self.surface.local_from_crs(t.x, t.y), t.z * self.ve)
-               for t in self.targets.targets.values() if t.fix]
+               for t in self.targets.visible_targets()]
         if not pts:
             return False
         xs, ys, zs = zip(*pts)
@@ -322,8 +324,10 @@ class TerrainView(QtWidgets.QWidget):
         """
         if self.surface is None:
             return False
+        # Only what is on screen: framing a vehicle that has been switched
+        # off would pull the camera towards something nobody can see.
         pts = [(*self.surface.local_from_crs(t.x, t.y), t.z * self.ve)
-               for t in self.targets.targets.values() if t.fix]
+               for t in self.targets.visible_targets()]
         if not pts:
             return False
         xs, ys, zs = zip(*pts)

@@ -12,7 +12,8 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import calib, nodes, raster
-from .feed import (BOTTOM_ORDER, DEFAULT_DEPTH_PORT, DEFAULT_PORT, DEPTH_ORDER,
+from .feed import (BOTTOM_ORDER, CHAIN_OF, DEFAULT_DEPTH_PORT, DEFAULT_PORT,
+                   DEPTH_ORDER,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
                    UMBILICALS, explain, slot_for as feed_slot_for)
@@ -630,7 +631,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._closing = False
         self.fleet = vehicles.Fleet()
         self.fleet.load(prefs.fleet())
-        self.view.targets.set_styles(self.fleet.styles())
         self._fleet_dialog = None
         self._feed_dialog = None
         # Node slides: the whole history, and the open cases keyed by ROV slot.
@@ -652,6 +652,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_readout()
         self._build_menu()
         self._apply_saved_view()
+        self._configure_targets()
         self.statusBar().showMessage("No grid loaded - File › Open, or drop a GeoTIFF here")
 
         self._stale_timer = QtCore.QTimer(self)
@@ -836,6 +837,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         tg = QtWidgets.QGroupBox("Targets")
         tl = QtWidgets.QVBoxLayout(tg)
+        # One per ROV chain. Switching one off drops its TMS, their tether and
+        # umbilical, both trails and the table rows with it - half a chain on
+        # screen would leave a tether running to a body that is not there.
+        crow = QtWidgets.QWidget()
+        ch = QtWidgets.QHBoxLayout(crow)
+        ch.setContentsMargins(0, 0, 0, 0)
+        self.chain_b = {}
+        for slot in BOTTOM_ORDER:
+            b = QtWidgets.QPushButton(slot)
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.toggled.connect(
+                lambda on, s=slot: self._chain_toggled(s, on))
+            ch.addWidget(b, 1)
+            self.chain_b[slot] = b
+        tl.addWidget(crow)
+
         self.tgt_b = QtWidgets.QPushButton("Show targets")
         self.tgt_b.setCheckable(True)
         self.tgt_b.setChecked(True)
@@ -1503,6 +1521,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if item is not None:
                 item.setText(self.fleet.label(nm))
                 item.setForeground(QtGui.QColor(self.fleet.colour(nm)))
+        for slot, b in getattr(self, "chain_b", {}).items():
+            b.setText(self.fleet.label(slot))
         self._relabel_tie_actions()
         self._relabel_slide_actions()
         if self._calib_dialog is not None:
@@ -1681,6 +1701,7 @@ class MainWindow(QtWidgets.QMainWindow):
         prefs.set_last_grid(surf.path)
         prefs.set_last_dir("grid", surf.path)
         self.view.set_surface(surf)
+        self._configure_targets()
         self.ov_list.clear()
         self.setWindowTitle(f"Bathy3D — {os.path.basename(surf.path)}")
 
@@ -2122,6 +2143,53 @@ class MainWindow(QtWidgets.QMainWindow):
             "--" if speed is None or not math.isfinite(speed) else f"{speed:.2f} m/s")
         self.tgt_table.item(r, 6).setText(age)
 
+    def _configure_targets(self):
+        """Put the target layer back the way the operator had it.
+
+        ``TerrainView.set_surface`` builds a *new* TargetLayer, so everything
+        configured on the old one is gone the moment a grid is opened or Mesh
+        detail is changed. Names, colours, trail retention, Show TMS and the
+        per-ROV selection all live here so there is one place that knows what
+        has to be restored, and one call to make after a load.
+        """
+        t = self.view.targets
+        t.set_chains(CHAIN_OF)
+        t.set_styles(self.fleet.styles())
+        t.set_trail_seconds(TRAILS.get(self.trail_c.currentText(),
+                                       DEFAULT_TRAIL_SECONDS))
+        t.set_tms_visible(self.tms_b.isChecked())
+        t.set_visible(self.tgt_b.isChecked())
+        for slot, b in self.chain_b.items():
+            t.set_chain_hidden(slot, not b.isChecked())
+        self._sync_chain_rows()
+
+    def _chain_toggled(self, slot, on):
+        """Show or hide one ROV's whole chain, on screen and in the table."""
+        self.view.targets.set_chain_hidden(slot, not on)
+        self.view.targets.draw_links(TETHERS)
+        self.view.targets.draw_links(UMBILICALS)
+        self._sync_chain_rows()
+        try:
+            prefs.set_hidden_chains(
+                [s for s, b in self.chain_b.items() if not b.isChecked()])
+        except Exception:
+            pass
+        self.view.plotter.render()
+        hidden = [self.fleet.label(s) for s, b in self.chain_b.items()
+                  if not b.isChecked()]
+        self.statusBar().showMessage(
+            "Showing every vehicle." if not hidden
+            else "Hidden: " + ", ".join(hidden)
+            + " - and their TMS, tethers and trails.", 8000)
+
+    def _sync_chain_rows(self):
+        """A hidden chain leaves the table too - that is what disregarding it
+        means. The vessel belongs to both chains and stays whatever happens."""
+        hidden = self.view.targets.hidden_chains
+        for r, nm in enumerate(ORDER):
+            owner = CHAIN_OF.get(nm)
+            self.tgt_table.setRowHidden(r, owner is not None and owner in hidden)
+
     def _tms_toggled(self, on):
         self.view.targets.set_tms_visible(on)
         self.view.targets.draw_links(TETHERS)
@@ -2261,6 +2329,12 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.blockSignals(True)
             widget.setValue(value)
             widget.blockSignals(False)
+        off = set(prefs.hidden_chains())
+        for slot, b in self.chain_b.items():
+            b.blockSignals(True)
+            b.setChecked(slot not in off)
+            b.blockSignals(False)
+            b.setText(self.fleet.label(slot))
         self._ramp_choice = {"Depth": prefs.view("view/ramp"),
                              "Slope": prefs.view("view/ramp_slope")}
         mode = prefs.view("view/color_by")

@@ -146,6 +146,13 @@ class TargetLayer:
         self._tms_scale = 1.0
         self.visible = True
         self.tms_visible = True
+        #: Body -> the ROV whose chain it belongs to, so switching one ROV off
+        #: takes its TMS, tethers and trails with it. Set from outside: this
+        #: layer is told how the fleet is wired rather than knowing the feed.
+        self.chain_of: dict[str, str] = {}
+        #: Chains switched off. Anything not in a chain - the vessel - is
+        #: unaffected, since it belongs to both ROVs and to neither.
+        self.hidden_chains: set[str] = set()
         self.tethers_visible = True
 
     # ------------------------------------------------------------------ setup
@@ -252,6 +259,37 @@ class TargetLayer:
     def _kind_visible(self, t: Target) -> bool:
         return self.tms_visible if t.kind == "cylinder" else True
 
+    def _chain_visible(self, name: str) -> bool:
+        """False for a body belonging to a chain that has been switched off."""
+        return self.chain_of.get(name, None) not in self.hidden_chains
+
+    def shows(self, t: Target) -> bool:
+        """Everything that decides whether one body is on screen at all."""
+        return (self.visible and self._kind_visible(t)
+                and self._chain_visible(t.name))
+
+    def set_chains(self, chain_of: dict) -> None:
+        """Say which bodies belong to which ROV's chain."""
+        self.chain_of = dict(chain_of or {})
+        self.refresh()
+
+    def set_chain_hidden(self, rov: str, hidden: bool) -> None:
+        """Switch one ROV's whole chain off, or back on.
+
+        Hiding an ROV hides its TMS, their tether and umbilical, and both
+        trails. Half a chain on screen is worse than none: the tether would
+        run to a body that is not there.
+        """
+        if hidden:
+            self.hidden_chains.add(rov)
+        else:
+            self.hidden_chains.discard(rov)
+        self.refresh()
+
+    def visible_targets(self) -> list:
+        """The bodies actually on screen, with a fix - what the camera frames."""
+        return [t for t in self.targets.values() if t.fix and self.shows(t)]
+
     def set_tms_visible(self, on: bool) -> None:
         self.tms_visible = bool(on)
         self.refresh()
@@ -347,7 +385,9 @@ class TargetLayer:
             # A tether to a hidden TMS is a line to nowhere, so it goes with it.
             if not (self.visible and self.tethers_visible and self.tms_visible
                     and a is not None and b is not None and a.fix and b.fix
-                    and self.surface is not None):
+                    and self.surface is not None
+                    and self._chain_visible(lower)
+                    and self._chain_visible(upper)):
                 continue
             pa = (*self.surface.local_from_crs(a.x, a.y), a.z * self._ve)
             pb = (*self.surface.local_from_crs(b.x, b.y), b.z * self._ve)
@@ -406,7 +446,7 @@ class TargetLayer:
                 name=f"tgt:{t.name}", render=False, pickable=False,
                 opacity=0.45 if t.stale else 1.0,
             )
-        bag["marker"].SetVisibility(self.visible and self._kind_visible(t))
+        bag["marker"].SetVisibility(self.shows(t))
         draw_on_top(bag["marker"])
 
         bag["label"] = self.plotter.add_point_labels(
@@ -414,7 +454,7 @@ class TargetLayer:
             font_size=11, text_color=t.color, shape=None, show_points=False,
             always_visible=True, render=False,
         )
-        bag["label"].SetVisibility(self.visible and self._kind_visible(t))
+        bag["label"].SetVisibility(self.shows(t))
 
         # Drop line to the seabed, so depth reads against the terrain.
         p = self.surface.probe(t.x, t.y)
@@ -424,7 +464,7 @@ class TargetLayer:
                 line_width=1, opacity=0.5, name=f"stem:{t.name}",
                 render=False, pickable=False,
             )
-            bag["stem"].SetVisibility(self.visible and self._kind_visible(t))
+            bag["stem"].SetVisibility(self.shows(t))
             draw_on_top(bag["stem"])
         elif "stem" in bag:
             # Back on the seabed - drop the line rather than leaving it hanging.
@@ -445,5 +485,5 @@ class TargetLayer:
                 pv.lines_from_points(pts), color=t.color, line_width=2, opacity=0.9,
                 name=f"trail:{t.name}", render=False, pickable=False,
             )
-            bag["trail"].SetVisibility(self.visible and self._kind_visible(t))
+            bag["trail"].SetVisibility(self.shows(t))
             draw_on_top(bag["trail"])

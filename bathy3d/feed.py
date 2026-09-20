@@ -69,6 +69,15 @@ def slot_for(name: str) -> str:
 #: Derived from the tuples above, so adding a vehicle needs no edit here.
 BOTTOM_ORDER = tuple(n for n in DEPTH_ORDER if n not in set(TETHERS.values()))
 
+#: Body -> the ROV whose chain it belongs to. Switching an ROV off in the
+#: Targets panel takes its TMS with it, because half a chain on screen leaves
+#: a tether running to a body that is not there. The vessel is deliberately
+#: absent: it belongs to both chains and to neither, so it always stays.
+CHAIN_OF = {}
+for _rov, _tms in TETHERS.items():
+    CHAIN_OF[_rov] = _rov
+    CHAIN_OF[_tms] = _rov
+
 DEFAULT_PORT = 6451
 DEFAULT_DEPTH_PORT = 6452
 
