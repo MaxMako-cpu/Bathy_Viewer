@@ -90,6 +90,28 @@ DEPTH_STALE_AFTER = 15.0
 POSITION_FIELDS = 2 * len(ORDER)
 DEPTH_FIELDS = len(DEPTH_ORDER)
 
+
+def active_order(chains, order=ORDER) -> tuple:
+    """The slots a sender actually fills when only some chains are deployed.
+
+    The sender emits a field for every body whether or not it is deployed,
+    leaving the absent ones empty - and consecutive delimiters collapse, so
+    those empties never reach the decoder. A record of ten fields arrives as
+    six numbers, and reading six numbers as the first six of ten puts an ROV
+    at its TMS's position and a TMS at the vessel's, one second late.
+
+    Telling the decoder which chains are out solves both halves at once: the
+    record length becomes what is really on the wire, and the values land on
+    the bodies they belong to. The vessel is never part of a chain, so it is
+    always kept.
+    """
+    live = set()
+    for rov in chains or ():
+        live.add(rov)
+        if rov in TETHERS:
+            live.add(TETHERS[rov])
+    return tuple(n for n in order if n not in CHAIN_OF or n in live)
+
 #: Decimal places every field carries - the only thing that marks where one
 #: record ends and the next begins in a delimiter-free stream.
 _DECIMALS = 3
@@ -103,6 +125,11 @@ _GLUE = re.compile(r"(\.\d{%d})(?=[-+]?\d)" % _DECIMALS)
 
 #: A run of digits and dots with no delimiter of any kind.
 _GLUED_NUM = re.compile(r"[-+0-9.]+")
+
+#: Field separator. Runs collapse, which is why an absent vehicle's empty
+#: field never reaches the decoder and the record arrives shorter than it
+#: looks - see active_order.
+_SPLIT = re.compile(r"[,;\t\r\n ]+")
 
 #: Never let a partial-record buffer grow without bound.
 _MAX_CARRY = 4096
@@ -139,13 +166,20 @@ def unglue(buf: str) -> str:
 
 
 def _nth_field_end(text: str, n: int) -> int:
-    """Index just past the ``n``th comma-separated field in ``text``."""
-    seen = 0
-    for i, ch in enumerate(text):
-        if ch in ",;\t\r\n ":
-            seen += 1
-            if seen == n:
-                return i
+    """Index just past the ``n``th *number* in ``text``.
+
+    Counting numbers, not separators. They were the same thing while every
+    field carried a value, so this used to count commas - but a sender that
+    leaves an undeployed vehicle's field empty writes ",,,", which is three
+    separators and no numbers. The buffer was then cut mid-record and every
+    record after it came out rotated by a body: the vessel wearing the ROV's
+    position, the ROV wearing its TMS's.
+    """
+    spans = list(_GLUED_NUM.finditer(text))
+    if n <= 0:
+        return 0
+    if n <= len(spans):
+        return spans[n - 1].end()
     return len(text)
 
 
@@ -183,20 +217,26 @@ def _values(buf: str, count: int, stream: bool):
     return records, text[consumed:].lstrip(",\r\n \t")[-_MAX_CARRY:]
 
 
-def parse_records(buf: str, stream: bool = True) -> tuple[list[Fix], str]:
-    """Decode position records: one E/N pair per vehicle in :data:`ORDER`."""
-    records, carry = _values(buf, POSITION_FIELDS, stream)
+def parse_records(buf: str, stream: bool = True,
+                  order: tuple = ORDER) -> tuple[list[Fix], str]:
+    """Decode position records: one E/N pair per vehicle in ``order``.
+
+    ``order`` is the bodies the sender is actually filling - see
+    :func:`active_order`. It defaults to the full fleet.
+    """
+    records, carry = _values(buf, 2 * len(order), stream)
     now = datetime.now(timezone.utc)
     return ([Fix(now, {nm: (r[2 * i], r[2 * i + 1])
-                       for i, nm in enumerate(ORDER)}) for r in records],
+                       for i, nm in enumerate(order)}) for r in records],
             carry)
 
 
-def parse_depths(buf: str, stream: bool = True) -> tuple[list[DepthFix], str]:
+def parse_depths(buf: str, stream: bool = True,
+                 order: tuple = DEPTH_ORDER) -> tuple[list[DepthFix], str]:
     """Decode depth records: one metres-below-surface value per vehicle."""
-    records, carry = _values(buf, DEPTH_FIELDS, stream)
+    records, carry = _values(buf, len(order), stream)
     now = datetime.now(timezone.utc)
-    return [DepthFix(now, dict(zip(DEPTH_ORDER, r))) for r in records], carry
+    return [DepthFix(now, dict(zip(order, r))) for r in records], carry
 
 
 def explain(buf: str, count: int = POSITION_FIELDS) -> str:
@@ -236,13 +276,23 @@ class UdpFeed(QtCore.QThread):
     status = QtCore.Signal(str, bool)    # message, healthy
 
     def __init__(self, port: int, decoder, fields: int, label: str,
-                 host: str = "0.0.0.0", parent=None):
+                 host: str = "0.0.0.0", parent=None, full_order: tuple = (),
+                 per_body: int = 1):
         super().__init__(parent)
         self.port = int(port)
         self.host = host
         self.label = label
         self._decode = decoder
         self.fields = fields
+        #: Which bodies the sender is filling, and how many numbers each takes.
+        #: Absent vehicles are sent as empty fields and empty fields never
+        #: reach the decoder, so the record really is shorter - see
+        #: :func:`active_order`.
+        self.full_order = tuple(full_order)
+        self.per_body = int(per_body)
+        self.order = tuple(full_order)
+        self.full_fields = fields
+        self.mismatch = 0
         self._stop = threading.Event()
         self.packets = 0
         self.records = 0
@@ -255,6 +305,44 @@ class UdpFeed(QtCore.QThread):
         self.last_addr = ""
         self.last_packet_at = 0.0
         self.started_at = 0.0
+
+    def set_layout(self, chains) -> None:
+        """Say which ROV chains are deployed, so the record length matches.
+
+        Assigned as one tuple each, which is atomic, so the listening thread
+        never sees an order and a field count that disagree.
+        """
+        order = active_order(chains, self.full_order)
+        self.order = order
+        self.fields = max(self.per_body * len(order), 1)
+        self.mismatch = 0
+
+    def _check_shape(self, raw: str, order: tuple) -> None:
+        """Say so when the datagram carries a different number of vehicles.
+
+        Reading a ten-number record as six puts an ROV at its TMS's position,
+        which looks entirely plausible and is 132 m wrong. A gap in the display
+        is recoverable; a vehicle drawn somewhere it is not, is not. So a
+        mismatch is reported rather than decoded.
+        """
+        n = sum(1 for t in _SPLIT.split(unglue(raw).strip()) if t)
+        if not n or self.fields <= 0 or n % self.fields == 0:
+            self.mismatch = 0
+            return
+        self.mismatch += 1
+        if self.mismatch not in (3, 30):      # once quickly, then rarely
+            return
+        want = len(order)
+        if self.full_fields and n % self.full_fields == 0:
+            guess = (f" That is a full set of {len(self.full_order)} vehicles, "
+                     f"so every ROV chain is probably reporting - select both "
+                     f"in the Targets panel.")
+        else:
+            guess = (f" Expecting {self.fields} numbers for {want} "
+                     f"vehicle{'s' if want != 1 else ''}.")
+        self.status.emit(
+            f"{self.label}: {n} numbers per datagram does not divide into "
+            f"records.{guess}", False)
 
     def stop(self) -> None:
         self._stop.set()
@@ -296,7 +384,8 @@ class UdpFeed(QtCore.QThread):
                     # held record, so take it at its word rather than sit on
                     # the last known value for ever.
                     if carry and time.monotonic() - self.last_packet_at > 1.5:
-                        flushed, carry = self._decode(carry, stream=False)
+                        flushed, carry = self._decode(carry, stream=False,
+                                                      order=self.order)
                         self.carry_len = len(carry)
                         for f in flushed:
                             self.records += 1
@@ -315,10 +404,12 @@ class UdpFeed(QtCore.QThread):
                 # line terminators a datagram routinely starts mid-record, and
                 # judging it on its own reports a fault that isn't there.
                 self.last_pending = pending[:220]
-                fixes, carry = self._decode(pending)
+                order = self.order          # one read; it may change under us
+                fixes, carry = self._decode(pending, order=order)
                 self.carry_len = len(carry)
                 if not fixes and not carry:
                     self.bad += 1
+                self._check_shape(raw, order)
                 for f in fixes:
                     self.records += 1
                     self.fix.emit(f)
@@ -329,12 +420,14 @@ class UdpFeed(QtCore.QThread):
 
 def PositionFeed(port: int = DEFAULT_PORT, host: str = "0.0.0.0", parent=None):
     """Listener for the position feed."""
-    return UdpFeed(port, parse_records, POSITION_FIELDS, "Positions", host, parent)
+    return UdpFeed(port, parse_records, POSITION_FIELDS, "Positions", host,
+                   parent, full_order=ORDER, per_body=2)
 
 
 def DepthFeed(port: int = DEFAULT_DEPTH_PORT, host: str = "0.0.0.0", parent=None):
     """Listener for the depth feed."""
-    return UdpFeed(port, parse_depths, DEPTH_FIELDS, "Depths", host, parent)
+    return UdpFeed(port, parse_depths, DEPTH_FIELDS, "Depths", host,
+                   parent, full_order=DEPTH_ORDER, per_body=1)
 
 
 def _sniff(argv):

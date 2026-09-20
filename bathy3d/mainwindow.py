@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import calib, nodes, raster
 from .feed import (BOTTOM_ORDER, CHAIN_OF, DEFAULT_DEPTH_PORT, DEFAULT_PORT,
-                   DEPTH_ORDER,
+                   DEPTH_ORDER, active_order,
                    DEPTH_STALE_AFTER, DepthFeed, DepthFix, ORDER,
                    POSITION_FIELDS, PositionFeed, STALE_AFTER, TETHERS,
                    UMBILICALS, explain, slot_for as feed_slot_for)
@@ -2007,10 +2007,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.feed = PositionFeed(self.port_s.value())
         self.feed.status.connect(self._feed_status)
         self.feed.fix.connect(self._on_fix)
-        self.feed.start()
         self.dfeed = DepthFeed(self.dport_s.value())
         self.dfeed.status.connect(self._feed_status)
         self.dfeed.fix.connect(self._on_fix)
+        # Before they start: the record length depends on which chains are out.
+        self._push_feed_layout()
+        self.feed.start()
         self.dfeed.start()
         self.listen_b.setText("Stop listening")
         self.port_s.setEnabled(False)
@@ -2163,9 +2165,42 @@ class MainWindow(QtWidgets.QMainWindow):
             t.set_chain_hidden(slot, not b.isChecked())
         self._sync_chain_rows()
 
+    def deployed_chains(self) -> list:
+        """The ROV chains the operator says are out, in wire order."""
+        return [s for s in BOTTOM_ORDER
+                if self.chain_b.get(s) is not None
+                and self.chain_b[s].isChecked()]
+
+    def _push_feed_layout(self):
+        """Tell both listeners which bodies the sender is actually filling.
+
+        The sender emits a field per body whether or not it is deployed and
+        leaves the absent ones empty; consecutive delimiters collapse, so those
+        empties never reach the decoder and a ten-field record arrives as six
+        numbers. Read as the first six of ten, that put the ROV at its TMS's
+        position - 132 m out - and the TMS at the vessel's, a second late,
+        with everything updating at half rate.
+
+        So the selection is not only about what is drawn: it is what the
+        decoder is told to expect.
+        """
+        chains = self.deployed_chains()
+        for feed in (getattr(self, "feed", None), getattr(self, "dfeed", None)):
+            if feed is not None:
+                feed.set_layout(chains)
+        # A body that is no longer in the layout will never be updated again,
+        # so anything remembered for it is stale the moment it is dropped.
+        keep = set(active_order(chains)) | set(active_order(chains, DEPTH_ORDER))
+        for store in (self._positions, self._depths):
+            for name in [n for n in store if n not in keep]:
+                store.pop(name, None)
+        if self.view.surface is not None:
+            self._place_targets()
+
     def _chain_toggled(self, slot, on):
         """Show or hide one ROV's whole chain, on screen and in the table."""
         self.view.targets.set_chain_hidden(slot, not on)
+        self._push_feed_layout()
         self.view.targets.draw_links(TETHERS)
         self.view.targets.draw_links(UMBILICALS)
         self._sync_chain_rows()

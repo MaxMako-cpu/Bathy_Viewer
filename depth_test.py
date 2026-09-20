@@ -241,8 +241,26 @@ check("and the trail retention",
       win.view.targets.trail_seconds == TRAILS.get(win.trail_c.currentText()),
       f"{win.view.targets.trail_seconds:.0f} s")
 
+# Deselecting is not only about what is drawn: it tells the decoder how long
+# a record is. The sender leaves an undeployed vehicle's fields empty and
+# empty fields never reach the decoder, so with one chain out the record is
+# genuinely shorter.
+check("the listeners were told which chains are out",
+      win.feed.order == ("Vessel", "ROV1", "TMS1")
+      and win.dfeed.order == ("ROV1", "TMS1"),
+      f"{win.feed.order} / {win.dfeed.order}")
+check("so the expected record length shrank with it",
+      win.feed.fields == 6 and win.dfeed.fields == 2,
+      f"{win.feed.fields} position fields, {win.dfeed.fields} depth")
+check("and the hidden chain's last known fix was dropped",
+      "ROV2" not in win._positions and "ROV2" not in win._depths,
+      str(sorted(win._positions)))
+
 win.chain_b["ROV2"].setChecked(True)
 pump(400)
+check("selecting it back restores the full record length",
+      win.feed.fields == 10 and win.dfeed.fields == 4,
+      f"{win.feed.fields} / {win.dfeed.fields}")
 check("re-selecting brings the whole chain back",
       not win.view.targets.hidden_chains
       and not any(win.tgt_table.isRowHidden(r)

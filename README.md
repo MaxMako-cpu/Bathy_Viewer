@@ -169,6 +169,7 @@ colour_test.py    colour checks: per-mode ramps, overlay colours, restart
 depth_test.py     five-body checks: both feeds, depths, TMS, tethers
 slopebox_test.py  slope box: native resolution, halo, picking, limits
 crs_test.py       other projections: UTM 16N/31N/15S/56S and geographic
+layout_test.py    a partly-deployed fleet: real wire records, one ROV out
 calib_test.py     depth calibration: the fit, then tie-ins through the window
 nodes_test.py     node slides: the fit, a known hillside, cases through the window
 vehicles_test.py  renaming: labels, colours, and that no slot moved
@@ -378,6 +379,26 @@ changing your zoom.
 
 Markers, trails, tethers and drop lines are drawn over the terrain rather than
 depth-tested against it, so relief between a body and the camera cannot hide it.
+
+### The buttons say which ROVs are deployed
+
+**The per-ROV buttons are not only a display filter — they tell the decoder how
+long a record is.** The sender emits a field for every body whether or not it is
+deployed, leaving the absent ones empty, and consecutive delimiters collapse, so
+those empty fields never reach the decoder. With one ROV out, a ten-field
+position record arrives as six numbers.
+
+Read as the first six of ten, that put the ROV at its TMS's position — **132 m
+out** — the TMS at the vessel's a second late, drew phantoms for vehicles that
+were not in the water, and halved the update rate. Depths did the same, showing
+an ROV **56 m shallow**. Deselecting the chain that is not deployed makes the
+expected record length match the wire, and the values land on the bodies they
+belong to. Verified against real captures pinned in `layout_test.py`.
+
+Get it the wrong way round and the listener says so rather than decoding: a
+datagram whose field count does not divide into records is reported, with a
+note when the count matches a full fleet. A gap in the display is recoverable;
+a vehicle drawn where it is not, is not.
 
 The **Targets** panel carries a button per ROV. Both selected shows everything;
 deselect one and that ROV, its TMS, their tether and umbilical, both trails and
