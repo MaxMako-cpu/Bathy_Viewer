@@ -117,6 +117,38 @@ if wrong:
           off > 100.0, f"{off:,.0f} m out")
 
 
+print("\nreading a datagram by field position - what actually decodes the feed:")
+# The empty fields say which vehicles are reporting, so nothing has to be
+# configured. This matters because the alternative - telling the decoder which
+# chains were deployed - conflated what the sender fills with what the
+# operator wants to look at. Deselecting a deployed ROV to clear the view then
+# read one datagram as three vessel fixes 130 m apart.
+from bathy3d.feed import parse_fielded
+
+got = parse_fielded(POS[0], ORDER, 2)
+check("a one-ROV position record decodes straight",
+      got is not None and len(got) == 1 and set(got[0]) == {"Vessel", "ROV2", "TMS2"},
+      str(sorted(got[0])) if got else "None")
+check("onto the right bodies",
+      got and abs(got[0]["ROV2"][0] - 393745.129) < 1e-9
+      and abs(got[0]["TMS2"][1] - 3011660.803) < 1e-9)
+gotd = parse_fielded(DEP[0], DEPTH_ORDER, 1)
+check("and a one-ROV depth record, leading empty field and all",
+      gotd is not None and gotd[0] == {"ROV2": [1002.395], "TMS2": [946.100]},
+      str(gotd))
+
+full_p = ("706148.701,3006428.410,705939.201,3006546.099,706515.275,"
+          "3006391.404,705941.900,3006549.300,706512.600,3006388.100")
+check("a full fleet still decodes to five bodies",
+      len(parse_fielded(full_p, ORDER, 2)[0]) == 5)
+check("a terminator does not upset it",
+      parse_fielded(DEP[0] + "\n", DEPTH_ORDER, 1) == gotd)
+check("half a coordinate is refused, not published",
+      parse_fielded("393678.457,,,,393745.129,3011781.808,,,"
+                    "393693.311,3011660.803", ORDER, 2) is None)
+check("and so is anything that is not a whole number of records",
+      parse_fielded("1,2,3", ORDER, 2) is None)
+
 print("\nwith nothing selected at all:")
 # Deselecting both chains leaves the depth feed with no bodies - unlike
 # positions, it has no vessel to fall back on. The record length was floored

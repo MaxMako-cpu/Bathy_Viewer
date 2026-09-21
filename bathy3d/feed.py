@@ -131,6 +131,12 @@ _GLUED_NUM = re.compile(r"[-+0-9.]+")
 #: looks - see active_order.
 _SPLIT = re.compile(r"[,;\t\r\n ]+")
 
+#: Field splitter that KEEPS empty fields. The one above collapses runs,
+#: which is right for a stream of bare numbers and wrong for a sender that
+#: marks an absent vehicle with an empty field - those empties are the only
+#: thing saying which bodies are reporting.
+_FIELD = re.compile(r"[,;]")
+
 #: Never let a partial-record buffer grow without bound.
 _MAX_CARRY = 4096
 
@@ -181,6 +187,48 @@ def _nth_field_end(text: str, n: int) -> int:
     if n <= len(spans):
         return spans[n - 1].end()
     return len(text)
+
+
+def parse_fielded(raw: str, full_order: tuple, per_body: int):
+    """Decode a datagram that carries whole records, by field position.
+
+    The sender emits a field for every body and leaves an absent one empty, so
+    the datagram already says which vehicles are reporting - there is nothing
+    to configure and nothing to guess. This is the path that should handle a
+    live feed; the numeric resync below exists for a sender that splits or
+    batches records, where the field positions cannot be trusted.
+
+    Returns a list of ``{name: values}`` dicts, or None if this datagram is
+    not a whole number of records - in which case the caller falls back.
+    """
+    # Whitespace only. A leading comma is not padding: the depth feed's first
+    # field is ROV1's, and it is empty in every record of a one-ROV job, so
+    # trimming separators here silently shortened the record by a body.
+    text = raw.strip()
+    if not text:
+        return None
+    fields = [f.strip() for f in _FIELD.split(text)]
+    width = per_body * len(full_order)
+    if width <= 0 or len(fields) % width:
+        return None
+
+    out = []
+    for k in range(len(fields) // width):
+        chunk = fields[k * width:(k + 1) * width]
+        one = {}
+        for i, name in enumerate(full_order):
+            cell = chunk[i * per_body:(i + 1) * per_body]
+            filled = [c for c in cell if c]
+            if not filled:
+                continue                    # this vehicle is not reporting
+            if len(filled) != per_body:
+                return None                 # half a coordinate is not a fix
+            try:
+                one[name] = [float(c) for c in cell]
+            except ValueError:
+                return None
+        out.append(one)
+    return out
 
 
 def _values(buf: str, count: int, stream: bool):
@@ -305,6 +353,7 @@ class UdpFeed(QtCore.QThread):
         self.full_fields = fields
         self.mismatch = 0
         self._warned_empty = False
+        self._drop_carry = False
         self._stop = threading.Event()
         self.packets = 0
         self.records = 0
@@ -417,55 +466,86 @@ class UdpFeed(QtCore.QThread):
                 self.last_addr = f"{addr[0]}:{addr[1]}"
                 raw = data.decode("ascii", errors="replace")
                 self.last_raw = raw[:220]
-                pending = carry + raw
-                # Diagnose the pending buffer, not this datagram alone: with no
-                # line terminators a datagram routinely starts mid-record, and
-                # judging it on its own reports a fault that isn't there.
-                self.last_pending = pending[:220]
-                order = self.order          # one read; it may change under us
-                if self._drop_carry:
-                    self._drop_carry = False
-                    carry = ""
-                    pending = raw
-                    self.last_pending = pending[:220]
-                if not order:
-                    # Nothing selected to decode onto. Say so once rather than
-                    # sitting silent, and keep listening so it recovers the
-                    # moment a chain is selected again.
-                    carry = ""
-                    self.carry_len = 0
-                    if not self._warned_empty:
-                        self._warned_empty = True
-                        self.status.emit(
-                            f"{self.label}: no ROV chain is selected, so there "
-                            "is nothing to decode these onto. Select one in "
-                            "the Targets panel.", False)
-                    continue
-                self._warned_empty = False
+
                 try:
-                    fixes, carry = self._decode(pending, order=order)
-                except Exception as exc:
-                    # A decoder fault must not take the listener down with it.
-                    # One did: a zero record length reached a // and killed the
-                    # thread, so the feed stopped dead with only a traceback on
-                    # a console nobody had open.
+                    carry = self._handle(raw, carry)
+                except Exception as exc:                  # noqa: BLE001
+                    # Nothing a datagram can do may end the listener. Twice
+                    # now a fault in here has killed the thread outright and
+                    # the feed simply stopped, with only a traceback on a
+                    # console nobody had open. A dropped datagram is cheap; a
+                    # dead listener is the whole job.
                     carry = ""
                     self.carry_len = 0
                     self.bad += 1
                     self.status.emit(
-                        f"{self.label}: could not decode that datagram - "
+                        f"{self.label}: dropped a datagram - "
                         f"{type(exc).__name__}: {exc}", False)
-                    continue
-                self.carry_len = len(carry)
-                if not fixes and not carry:
-                    self.bad += 1
-                self._check_shape(raw, order)
-                for f in fixes:
-                    self.records += 1
-                    self.fix.emit(f)
         finally:
             sock.close()
             self.status.emit(f"{self.label}: stopped", False)
+
+    def _handle(self, raw: str, carry: str) -> str:
+        """Decode one datagram and publish what it holds. Returns the new carry.
+
+        Split out of the listening loop so a fault in here is caught there and
+        costs one datagram rather than the whole feed.
+        """
+        # Field positions first. A datagram that holds whole records says for
+        # itself which bodies are reporting - an absent one is an empty field -
+        # so nothing has to be configured and nothing guessed. Only a sender
+        # that splits or batches records falls through to the numeric resync,
+        # where the field positions cannot be trusted.
+        whole = parse_fielded(raw, self.full_order, self.per_body)
+        if whole is not None:
+            self.carry_len = 0
+            self.mismatch = 0
+            self._warned_empty = False
+            self._drop_carry = False
+            now_utc = datetime.now(timezone.utc)
+            for one in whole:
+                self.records += 1
+                if self.per_body == 2:
+                    self.fix.emit(Fix(now_utc, {k: (v[0], v[1])
+                                                for k, v in one.items()}))
+                else:
+                    self.fix.emit(DepthFix(now_utc,
+                                           {k: v[0] for k, v in one.items()}))
+            return ""
+
+        if self._drop_carry:
+            # Half-decoded text framed against a previous record length cannot
+            # be read against this one. Drop it and resync on this datagram.
+            self._drop_carry = False
+            carry = ""
+        pending = carry + raw
+        # Diagnose the pending buffer, not this datagram alone: with no line
+        # terminators a datagram routinely starts mid-record, and judging it on
+        # its own reports a fault that isn't there.
+        self.last_pending = pending[:220]
+
+        order = self.order          # one read; it may change under us
+        if not order:
+            # Nothing to decode onto. Say so once rather than sitting silent,
+            # and keep listening so it recovers when a chain is selected again.
+            self.carry_len = 0
+            if not self._warned_empty:
+                self._warned_empty = True
+                self.status.emit(
+                    f"{self.label}: no vehicles to decode onto - "
+                    "select an ROV chain in the Targets panel.", False)
+            return ""
+        self._warned_empty = False
+
+        fixes, carry = self._decode(pending, order=order)
+        self.carry_len = len(carry)
+        if not fixes and not carry:
+            self.bad += 1
+        self._check_shape(raw, order)
+        for f in fixes:
+            self.records += 1
+            self.fix.emit(f)
+        return carry
 
 
 def PositionFeed(port: int = DEFAULT_PORT, host: str = "0.0.0.0", parent=None):

@@ -2172,35 +2172,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self.chain_b[s].isChecked()]
 
     def _push_feed_layout(self):
-        """Tell both listeners which bodies the sender is actually filling.
+        """Nothing to push: the datagram says which bodies are reporting.
 
-        The sender emits a field per body whether or not it is deployed and
-        leaves the absent ones empty; consecutive delimiters collapse, so those
-        empties never reach the decoder and a ten-field record arrives as six
-        numbers. Read as the first six of ten, that put the ROV at its TMS's
-        position - 132 m out - and the TMS at the vessel's, a second late,
-        with everything updating at half rate.
+        This used to tell each listener which chains were deployed, so the
+        decoder knew how long a record was. That conflated two different
+        things - what the *sender* is filling, and what the *operator* wants
+        to look at. Deselect a deployed ROV merely to clear the view and the
+        decoder was told it had stopped transmitting: one datagram then read
+        as three vessel fixes 130 m apart, so the vessel sat on the TMS and
+        the trail zigzagged between all three.
 
-        So the selection is not only about what is drawn: it is what the
-        decoder is told to expect.
+        The empty fields in the datagram already say which vehicles are
+        reporting, so the decoder reads it straight and these buttons are what
+        they always were - a display filter.
         """
-        chains = self.deployed_chains()
-        for feed in (getattr(self, "feed", None), getattr(self, "dfeed", None)):
-            if feed is not None:
-                feed.set_layout(chains)
-        # A body that is no longer in the layout will never be updated again,
-        # so anything remembered for it is stale the moment it is dropped.
-        keep = set(active_order(chains)) | set(active_order(chains, DEPTH_ORDER))
-        for store in (self._positions, self._depths):
-            for name in [n for n in store if n not in keep]:
-                store.pop(name, None)
-        if self.view.surface is not None:
-            self._place_targets()
+        return
 
     def _chain_toggled(self, slot, on):
         """Show or hide one ROV's whole chain, on screen and in the table."""
         self.view.targets.set_chain_hidden(slot, not on)
-        self._push_feed_layout()
         self.view.targets.draw_links(TETHERS)
         self.view.targets.draw_links(UMBILICALS)
         self._sync_chain_rows()
