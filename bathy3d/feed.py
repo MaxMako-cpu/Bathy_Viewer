@@ -195,6 +195,17 @@ def _values(buf: str, count: int, stream: bool):
     ``stream=False`` at the end of the feed. The cost is one record of latency;
     the alternative is publishing a wrong position.
     """
+    if count <= 0:
+        # No bodies to decode onto: every ROV chain has been deselected, and
+        # unlike positions the depth feed has no vessel to fall back on. There
+        # is nothing to read the numbers as, so nothing is read - and the
+        # buffer is dropped rather than carried, or it would grow for ever.
+        #
+        # This crashed the listening thread on a vessel: the record length was
+        # floored at 1 where the layout was set, but the decoders recompute it
+        # from the layout itself, so a zero got through to a // and took the
+        # feed down.
+        return [], ""
     text = unglue(buf)
     toks = [t for t in re.split(r"[,;\t\r\n ]+", text.strip()) if t]
     vals = []
@@ -293,6 +304,7 @@ class UdpFeed(QtCore.QThread):
         self.order = tuple(full_order)
         self.full_fields = fields
         self.mismatch = 0
+        self._warned_empty = False
         self._stop = threading.Event()
         self.packets = 0
         self.records = 0
@@ -316,6 +328,12 @@ class UdpFeed(QtCore.QThread):
         self.order = order
         self.fields = max(self.per_body * len(order), 1)
         self.mismatch = 0
+        self._warned_empty = False
+        # Whatever is half-decoded was framed against the old record length,
+        # so it cannot be read against the new one: the first records after a
+        # change came out shifted by a body, putting the vessel's position on
+        # the ROV. Drop it and resync on the next datagram.
+        self._drop_carry = True
 
     def _check_shape(self, raw: str, order: tuple) -> None:
         """Say so when the datagram carries a different number of vehicles.
@@ -405,7 +423,39 @@ class UdpFeed(QtCore.QThread):
                 # judging it on its own reports a fault that isn't there.
                 self.last_pending = pending[:220]
                 order = self.order          # one read; it may change under us
-                fixes, carry = self._decode(pending, order=order)
+                if self._drop_carry:
+                    self._drop_carry = False
+                    carry = ""
+                    pending = raw
+                    self.last_pending = pending[:220]
+                if not order:
+                    # Nothing selected to decode onto. Say so once rather than
+                    # sitting silent, and keep listening so it recovers the
+                    # moment a chain is selected again.
+                    carry = ""
+                    self.carry_len = 0
+                    if not self._warned_empty:
+                        self._warned_empty = True
+                        self.status.emit(
+                            f"{self.label}: no ROV chain is selected, so there "
+                            "is nothing to decode these onto. Select one in "
+                            "the Targets panel.", False)
+                    continue
+                self._warned_empty = False
+                try:
+                    fixes, carry = self._decode(pending, order=order)
+                except Exception as exc:
+                    # A decoder fault must not take the listener down with it.
+                    # One did: a zero record length reached a // and killed the
+                    # thread, so the feed stopped dead with only a traceback on
+                    # a console nobody had open.
+                    carry = ""
+                    self.carry_len = 0
+                    self.bad += 1
+                    self.status.emit(
+                        f"{self.label}: could not decode that datagram - "
+                        f"{type(exc).__name__}: {exc}", False)
+                    continue
                 self.carry_len = len(carry)
                 if not fixes and not carry:
                     self.bad += 1

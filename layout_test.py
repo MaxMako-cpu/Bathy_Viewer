@@ -117,6 +117,32 @@ if wrong:
           off > 100.0, f"{off:,.0f} m out")
 
 
+print("\nwith nothing selected at all:")
+# Deselecting both chains leaves the depth feed with no bodies - unlike
+# positions, it has no vessel to fall back on. The record length was floored
+# at 1 where the layout is set, but the decoders recompute it from the layout
+# itself, so a zero reached a // and killed the listening thread on a vessel.
+none_d = active_order((), DEPTH_ORDER)
+none_p = active_order(())
+check("the depth layout really is empty", none_d == (), str(none_d))
+check("while positions keep the vessel", none_p == ("Vessel",), str(none_p))
+try:
+    got, carry = parse_depths(DEP[0], stream=False, order=none_d)
+    crashed = None
+except Exception as exc:                                   # noqa: BLE001
+    crashed, got, carry = exc, [], ""
+check("decoding does not raise", crashed is None, repr(crashed))
+check("it simply decodes nothing", got == [] and carry == "",
+      f"{len(got)} records, {len(carry)} carried")
+check("and nothing is carried, so the buffer cannot grow for ever",
+      carry == "")
+try:
+    parse_records(POS[0], stream=False, order=())
+    ok = True
+except Exception as exc:                                   # noqa: BLE001
+    ok = False
+check("an empty position layout is equally harmless", ok)
+
 print("\nthe carry offset counts numbers, not separators:")
 # Empty fields are separators that carry no number. Cutting the buffer by
 # separator count left it mid-record, and every record after the first came
