@@ -19,7 +19,9 @@ from .feed import (BOTTOM_ORDER, CHAIN_OF, DEFAULT_DEPTH_PORT, DEFAULT_PORT,
                    UMBILICALS, explain, slot_for as feed_slot_for)
 from .measure import bearing_text, compass
 from . import ramps
-from .targets import DEFAULT_TRAIL_SECONDS
+from .targets import (DEFAULT_TRAIL_SECONDS,
+                      DOT_SIZES as TARGET_DOT_SIZES,
+                      TMS_SIZES as TARGET_TMS_SIZES)
 from . import prefs, vectors, vehicles
 from .viewer import TerrainView
 
@@ -868,6 +870,31 @@ class MainWindow(QtWidgets.QMainWindow):
             "their own depth, each on a dotted tether to its ROV.")
         self.tms_b.toggled.connect(self._tms_toggled)
         tl.addWidget(self.tms_b)
+        # Marker size. Auto is what the app has always done - the dots at a
+        # fixed pixel size, the TMS swollen so a 3 m body stays findable on a
+        # 130 km grid - but that swelling is not always wanted, so it can be
+        # pinned to a size or turned off entirely.
+        for key, label, choices, tip in (
+            ("dot", "ROV size", TARGET_DOT_SIZES,
+             "How big the vessel and ROV dots are drawn, in screen pixels. "
+             "Auto uses the shipped size."),
+            ("tms", "TMS size", TARGET_TMS_SIZES,
+             "The smallest a TMS cylinder is allowed to look. Auto keeps it "
+             "at least 20 pixels; True size draws the real 3 m x 2 m body, "
+             "which vanishes as you pull back."),
+        ):
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.addWidget(self._key(label))
+            combo = QtWidgets.QComboBox()
+            combo.addItems(list(choices))
+            combo.setToolTip(tip)
+            combo.currentTextChanged.connect(self._sizes_changed)
+            h.addWidget(combo, 1)
+            tl.addWidget(row)
+            setattr(self, f"{key}_size_c", combo)
+
         self.zoom_b = QtWidgets.QPushButton("Zoom to targets")
         self.zoom_b.clicked.connect(self.zoom_to_targets)
         tl.addWidget(self.zoom_b)
@@ -2160,6 +2187,8 @@ class MainWindow(QtWidgets.QMainWindow):
         t.set_trail_seconds(TRAILS.get(self.trail_c.currentText(),
                                        DEFAULT_TRAIL_SECONDS))
         t.set_tms_visible(self.tms_b.isChecked())
+        t.set_sizes(TARGET_DOT_SIZES.get(self.dot_size_c.currentText()),
+                    TARGET_TMS_SIZES.get(self.tms_size_c.currentText()))
         t.set_visible(self.tgt_b.isChecked())
         for slot, b in self.chain_b.items():
             t.set_chain_hidden(slot, not b.isChecked())
@@ -2214,6 +2243,18 @@ class MainWindow(QtWidgets.QMainWindow):
         for r, nm in enumerate(ORDER):
             owner = CHAIN_OF.get(nm)
             self.tgt_table.setRowHidden(r, owner is not None and owner in hidden)
+
+    def _sizes_changed(self, _text=None):
+        """Apply the chosen marker sizes and remember them."""
+        self.view.targets.set_sizes(
+            TARGET_DOT_SIZES.get(self.dot_size_c.currentText()),
+            TARGET_TMS_SIZES.get(self.tms_size_c.currentText()))
+        try:
+            prefs.set_view("view/dot_size", self.dot_size_c.currentText())
+            prefs.set_view("view/tms_size", self.tms_size_c.currentText())
+        except Exception:
+            pass
+        self.view.plotter.render()
 
     def _tms_toggled(self, on):
         self.view.targets.set_tms_visible(on)
@@ -2377,6 +2418,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.by_c, prefs.view("view/color_by")),
             (self.detail_c, prefs.view("view/detail")),
             (self.trail_c, prefs.view("view/trail")),
+            (self.dot_size_c, prefs.view("view/dot_size")),
+            (self.tms_size_c, prefs.view("view/tms_size")),
             (self.drag_c, "Move map" if prefs.view("view/left_action") == "pan"
                           else "Rotate"),
         ):

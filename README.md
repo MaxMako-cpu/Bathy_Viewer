@@ -365,7 +365,17 @@ terrain.
 
 Cylinders are drawn at their true 3 m × 2 m size but never allowed below 20
 screen pixels; a body that size is otherwise invisible until you have closed
-right in. They are also given plenty of ambient light, since a small object lit
+right in.
+
+**ROV size** and **TMS size** in the Targets panel override that when the
+automatic sizing is not what you want. *Auto* is the shipped behaviour — the
+dots at a fixed pixel size, the TMS swollen so it stays findable on a 130 km
+grid. The other choices pin it: for the dots a pixel size, for the TMS the
+smallest it is allowed to look.
+
+*True size* turns the swelling off altogether, so a TMS is drawn as the 3 m
+body it is — exact when you are close, and gone when you pull back. Both
+settings are remembered between runs. They are also given plenty of ambient light, since a small object lit
 only by the survey sun goes black whenever the sun is behind it.
 
 ### Scale is the thing to understand

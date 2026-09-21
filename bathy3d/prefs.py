@@ -167,6 +167,9 @@ VIEW = {
     "feed/port": (6451, int),
     "feed/depth_port": (6452, int),
     "view/show_tms": (True, bool),
+    # Marker size overrides. "Auto" is the shipped behaviour.
+    "view/dot_size": ("Auto", str),
+    "view/tms_size": ("Auto", str),
     # Off until the operator has tied in and decided it works. A correction
     # applied without being asked for would silently move every vehicle.
     "calib/on": (False, bool),

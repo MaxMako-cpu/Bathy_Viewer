@@ -47,6 +47,17 @@ TMS_HEIGHT_M = 2.0
 #: a speck next to its own tether, which is why this is larger than the ROV dot.
 TMS_MIN_PX = 20.0
 
+#: Marker sizes the operator can pick, in screen pixels, for the ROV and
+#: vessel dots. None means the shipped size.
+DOT_SIZES = {"Auto": None, "Tiny": 7.0, "Small": 9.0, "Medium": 12.0,
+             "Large": 18.0, "Huge": 26.0}
+
+#: The same for the TMS cylinders, as the smallest they are allowed to look.
+#: "True size" is 0: no swelling at all, so a 3 m body is drawn 3 m and
+#: disappears when you pull back - exact when close, and never distracting.
+TMS_SIZES = {"Auto": None, "True size": 0.0, "Tiny": 8.0, "Small": 13.0,
+             "Medium": 20.0, "Large": 32.0, "Huge": 48.0}
+
 #: Tether dash length on screen, so the line reads as dotted at any zoom.
 TETHER_DASH_PX = 5.0
 
@@ -144,6 +155,11 @@ class TargetLayer:
         self._ve = 1.0
         self._mpp = 1.0
         self._tms_scale = 1.0
+        #: Operator overrides for marker size. None leaves the shipped
+        #: behaviour alone - the dots at their fixed pixel size, the TMS
+        #: swelling so it never falls below TMS_MIN_PX.
+        self.dot_px = None
+        self.tms_px = None
         self.visible = True
         self.tms_visible = True
         #: Body -> the ROV whose chain it belongs to, so switching one ROV off
@@ -290,6 +306,20 @@ class TargetLayer:
         """The bodies actually on screen, with a fix - what the camera frames."""
         return [t for t in self.targets.values() if t.fix and self.shows(t)]
 
+    def set_sizes(self, dot_px=None, tms_px=None) -> None:
+        """Override how big the markers are drawn, or None for the default.
+
+        ``tms_px`` is the smallest the cylinder may look; 0 turns the swelling
+        off entirely and draws it at its true 3 m across.
+        """
+        self.dot_px = dot_px
+        self.tms_px = tms_px
+        # The TMS scale is cached against a dead band, so it has to be
+        # recomputed rather than waited for - the camera may not move again.
+        self._tms_scale = 0.0
+        self.set_metres_per_pixel(self._mpp)
+        self.refresh()
+
     def set_tms_visible(self, on: bool) -> None:
         self.tms_visible = bool(on)
         self.refresh()
@@ -346,7 +376,10 @@ class TargetLayer:
         if not mpp > 0:
             return
         self._mpp = mpp
-        want = max(1.0, TMS_MIN_PX * mpp / TMS_DIAMETER_M)
+        floor = TMS_MIN_PX if self.tms_px is None else self.tms_px
+        # A floor of zero is "true size": no swelling, so the cylinder is the
+        # 3 m x 2 m body it really is and vanishes as you pull back.
+        want = max(1.0, floor * mpp / TMS_DIAMETER_M) if floor else 1.0
         if abs(want - self._tms_scale) / max(self._tms_scale, 1e-9) < 0.02:
             return
         self._tms_scale = want
@@ -442,7 +475,8 @@ class TargetLayer:
             # a 131 km grid would be wider than the vehicles are apart.
             bag["marker"] = self.plotter.add_points(
                 np.array([[lx, ly, lz]], dtype=float), color=t.color,
-                point_size=BASE_POINT_PX * t.size, render_points_as_spheres=True,
+                point_size=(self.dot_px or BASE_POINT_PX) * t.size,
+                render_points_as_spheres=True,
                 name=f"tgt:{t.name}", render=False, pickable=False,
                 opacity=0.45 if t.stale else 1.0,
             )

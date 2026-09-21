@@ -189,6 +189,50 @@ check("showing TMS brings them back",
       actors.get("tgt:TMS1").GetVisibility()
       and any(a.startswith("link") for a in win.view.plotter.renderer.actors))
 
+print("\nmarker size, by hand or automatic:")
+from bathy3d.targets import DOT_SIZES, TMS_SIZES     # noqa: E402
+
+
+def dot_px():
+    a = win.view.plotter.renderer.actors.get("tgt:ROV1")
+    return a.GetProperty().GetPointSize() if a is not None else float("nan")
+
+
+check("Auto is the default for both",
+      win.dot_size_c.currentText() == "Auto"
+      and win.tms_size_c.currentText() == "Auto",
+      f"{win.dot_size_c.currentText()} / {win.tms_size_c.currentText()}")
+auto_dot, auto_tms = dot_px(), win.view.targets._tms_scale
+
+win.dot_size_c.setCurrentText("Huge")
+pump(250)
+big = dot_px()
+win.dot_size_c.setCurrentText("Tiny")
+pump(250)
+small = dot_px()
+check("the ROV dots follow the setting", small < auto_dot < big,
+      f"tiny {small:.1f} < auto {auto_dot:.1f} < huge {big:.1f} px")
+win.dot_size_c.setCurrentText("Auto")
+pump(250)
+check("and Auto puts them back", abs(dot_px() - auto_dot) < 0.01,
+      f"{dot_px():.1f} px")
+
+win.tms_size_c.setCurrentText("Huge")
+pump(250)
+huge_tms = win.view.targets._tms_scale
+win.tms_size_c.setCurrentText("True size")
+pump(250)
+true_tms = win.view.targets._tms_scale
+check("a TMS asked for its true size is not swollen at all",
+      abs(true_tms - 1.0) < 1e-9, f"scale {true_tms:.3f}")
+check("while Huge swells it further than Auto", huge_tms > auto_tms > 1.0,
+      f"huge {huge_tms:,.0f} > auto {auto_tms:,.0f}")
+win.tms_size_c.setCurrentText("Auto")
+pump(250)
+check("and Auto restores the shipped swelling",
+      abs(win.view.targets._tms_scale - auto_tms) / max(auto_tms, 1e-9) < 0.05,
+      f"{win.view.targets._tms_scale:,.0f} vs {auto_tms:,.0f}")
+
 print("\nshowing one ROV chain at a time:")
 check("there is a button per ROV", set(win.chain_b) == set(DEPTH_ORDER[:2]),
       str(sorted(win.chain_b)))

@@ -123,6 +123,26 @@ check("and both rails are still visible",
       w5.dock_controls.isVisible() and w5.dock_readout.isVisible())
 w5.close(); pump(200)
 
+# Marker sizes are a preference like any other, so they have to outlive the
+# session that chose them.
+w6 = MainWindow(None); w6.resize(1100, 700); w6.show(); pump(600)
+check("marker sizes start on Auto",
+      w6.dot_size_c.currentText() == "Auto"
+      and w6.tms_size_c.currentText() == "Auto")
+w6.dot_size_c.setCurrentText("Large")
+w6.tms_size_c.setCurrentText("True size")
+pump(300)
+w6.close(); pump(300)
+w7 = MainWindow(None); w7.resize(1100, 700); w7.show(); pump(700)
+check("and come back as they were left",
+      w7.dot_size_c.currentText() == "Large"
+      and w7.tms_size_c.currentText() == "True size",
+      f"{w7.dot_size_c.currentText()} / {w7.tms_size_c.currentText()}")
+check("with the layer actually set to them",
+      w7.view.targets.dot_px is not None and w7.view.targets.tms_px == 0.0,
+      f"dot {w7.view.targets.dot_px}, tms {w7.view.targets.tms_px}")
+w7.close(); pump(200)
+
 # a vanished file must not break startup
 prefs.set_last_grid(r"C:\nope\missing.tif")
 prefs.set_overlays([(r"C:\nope\gone.shp", "#ffffff")])
